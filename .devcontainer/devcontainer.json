@@ -1,0 +1,30 @@
+{
+  "name": "FilteringCV (CUDA 12.8 / uv)",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "mounts": [
+    "source=${localWorkspaceFolder}/../dataset/CommonVoice,target=/workspace/CommonVoice,type=bind,consistency=cached"
+  ],
+  "runArgs": ["--gpus=all"],
+  "hostRequirements": {
+    "gpu": "optional"
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
+        "python.terminal.activateEnvironment": true
+      },
+      "extensions": ["charliermarsh.ruff", "ms-python.python"]
+    }
+  },
+  "postCreateCommand": "cd /workspace && uv sync --extra sidon --extra dev",
+  "containerEnv": {
+    "NFA_PYTHON": "/opt/nfa-venv/bin/python",
+    "NFA_ALIGN_DIR": "/opt/NeMo/tools/nemo_forced_aligner"
+  }
+}

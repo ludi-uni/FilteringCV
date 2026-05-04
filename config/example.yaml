@@ -1,0 +1,234 @@
+# Copy and edit `input.corpus_root` to your extracted Common Voice language directory (e.g. .../ja).
+
+input:
+  corpus_root: data/cv-corpus-placeholder/ja
+  # 注意：tsv形式は物理行と論理行が一致しないことがあるため、Officeソフトなどでcsvに変換することを推奨します。
+  clip_tsv: validated.csv
+  audio_subdir: clips
+  locale_expected: ja
+  # メタ・話者フィルタ適用後、パス名ソートで先頭 N 件のみ（null で全件）
+  max_clips: null
+
+output:
+  root: out/cv_tts_ja_merged
+  format: wav
+  manifest: metadata.jsonl
+  rejects_name: rejects.csv
+  report_name: report.json
+  wav_subdir: wavs
+  keep_rejected_intermediate: false
+
+speakers:
+  # true: 下記 include / clip_metadata_filters 通過後の全行を同一 client_id として扱う（マニフェスト・speaker_aware split 用）。合成 ID は merged_speaker_client_id または既定 __cv_merged_speaker__
+  merge_filtered_speakers_as_one: false
+  # merged_speaker_client_id: merged_speaker
+  # 1 人だけのときはスカラーでもリストでも可（実装が正規化します）。全話者は []
+  include_client_ids: []
+  # 任意: gender / age / accents / variant / locale / segment の許容リスト（空の軸は無効）。docs/仕様.md 2.4 節
+  # リストに明示的に "" を含めると、その軸で TSV 空セルの行も許容する。含めないときは空欄行は除外（従来どおり）。
+  # up_votes / down_votes は閾値（null または省略で無効）。行の up_votes が設定値以上、down_votes が設定値以下の行だけ残す。
+  clip_metadata_filters:
+    genders: []
+    ages: []
+    accents: []
+    variants: []
+    locales: []
+    segments: []
+    up_votes: null
+    down_votes: null
+
+# two_pass_denoise + audio_pipeline_align / audio_pipeline_enhance 指定時: MFA/NFA 前は align のみ、通過後に enhance のみ実行。
+# 既定の enhance は Sidon（``type: sidon_restore``）。SGMSE / Dasheng に戻す場合はステップと ``uv sync`` の extra を合わせる。
+# 従来の単一 audio_pipeline 運用は align/enhance を削り two_pass_denoise.enabled: false にする。
+audio_pipeline_align:
+  target_sample_rate: 24000
+  channels: 1
+  audio_pipeline_id: align_gate_v1
+  steps:
+    # 先頭で target SR に揃える: early_audio_gate・品質ゲート・NFA 前処理が同一サンプルレート前提になる
+    - type: resample
+      sr: 24000
+    - type: lowpass
+      cutoff_hz: 11000
+    - type: highpass
+      cutoff_hz: 100
+    # head_tail_db が小さいほど先頭末尾の無音を厳しく落とす。学習で語頭語尾が詰まりすぎる場合は 34〜42 程度へ。
+    - type: trim_silence
+      max_keep_sec: 30.0
+      head_tail_db: 36
+      trim_frame_length: 1024
+      trim_hop_length: 256
+    - type: edge_ui_click
+      lead_scan_ms: 300
+      trail_scan_ms: 580
+      max_transient_ms: 400
+      # null: 録音開始クリックの直後にすぐ発話が始まる行でも除去。極弱語頭はメタ確認推奨。
+      lead_click_requires_pre_silence_ms: 55
+      peak_above_noise_db: 22
+      removal: mute_then_trim
+      # null: 語尾〜停止クリックの無音が短い行でも除去（55ms 要求だと実データで末尾が残りやすい）。
+      trail_click_requires_silence_ms: 100
+    - type: trim_silence
+      max_keep_sec: 30.0
+      head_tail_db: 36
+      trim_frame_length: 1024
+      trim_hop_length: 256
+
+audio_pipeline_enhance:
+  target_sample_rate: 24000
+  channels: 1
+  audio_pipeline_id: default_v1
+  steps:
+    # align 済みなら同一 SR のため resample 省略可（必要なら先頭に resample を足す）
+    # 既定: Sidon（``uv sync --extra sidon``）。SGMSE にする例: extra sgmse + ``type: denoise`` method: sgmse へ差し替え
+    - type: sidon_restore
+      device: auto
+    - type: edge_ui_click
+      # denoise / lip 等のスペクトル系の直後に実行（run_steps_on_array がキューして trim 直前でフラッシュ）
+      post_spectral: false
+      lead_scan_ms: 300
+      trail_scan_ms: 580
+      max_transient_ms: 400
+      # null: 録音開始クリックの直後にすぐ発話が始まる行でも除去。極弱語頭はメタ確認推奨。
+      lead_click_requires_pre_silence_ms: 55
+      peak_above_noise_db: 22
+      removal: mute_then_trim
+      # null: 語尾〜停止クリックの無音が短い行でも除去（55ms 要求だと実データで末尾が残りやすい）。
+      trail_click_requires_silence_ms: 55
+    - type: trim_silence
+      max_keep_sec: 15.0
+      # 大きいほど末尾の弱い「す」等を残しやすい（librosa.effects.trim の top_db）
+      head_tail_db: 50
+      trim_frame_length: 1024
+      trim_hop_length: 256
+    - type: normalize
+      method: loudness
+      integrated_lufs: -23.0
+    - type: trim_silence
+      max_keep_sec: 30.0
+      trim_sides: trailing
+      max_trailing_spike_frames: 5
+      head_tail_db: 44
+      trim_frame_length: 1024
+      trim_hop_length: 256
+    - type: trim_silence
+      max_keep_sec: 30.0
+      trim_sides: trailing
+      max_trailing_spike_frames: 5
+      head_tail_db: 44
+      trim_frame_length: 1024
+      trim_hop_length: 256
+      pad_head_ms: 75
+      pad_tail_ms: 120
+    - type: save_wav
+      bit_depth: 16
+
+quality_gate:
+  min_duration_sec: 0.3
+  max_duration_sec: 30.0
+  # 日本語: OpenJTalk カナのモーラ数 × 下限（秒/モーラ）より実長が短い → trim / max_keep_sec 等で欠けた疑い
+  min_sec_per_mora: 0.068
+  mora_gate_relax: 0.92
+  # 語間無音が多いコーパスでは 0.52 程度まで緩めることもある
+  max_silence_ratio: 0.45
+  # 100 = 従来（全フレーム RMS の max が基準）。92 前後でクリック一発に引っ張られにくい。
+  silence_ratio_ref_percentile: 92
+  silence_ratio_rms_floor: 0.05
+  # 極端にノイズっぽいクリップをハード拒否（推定 SNR が取れない短尺はこのチェックをスキップ）
+  min_estimated_snr_db: 8.5
+  max_clipping_ratio: 0.012
+  max_abs_dc_offset: 0.05
+  # 末尾の連続無音（品質ゲートと同一定義）が長すぎるクリップを拒否。null で無効。戯曲末尾の長いポーズは閾値を上げる。
+  max_trailing_silence_sec: null
+  # ハードゲート通過後の A/B/C ティア。C を落とす（annotate ならメタのみ付与、reject_b なら B も拒否）
+  quality_tier_mode: reject_b
+  quality_tier_a_min_snr_db: 16.0
+  quality_tier_b_min_snr_db: 8.5
+  quality_tier_a_max_silence_ratio: 0.32
+  quality_tier_b_max_silence_ratio: 0.42
+  quality_tier_a_max_clipping_ratio: 0.006
+  quality_tier_unknown_snr_silence_a: 0.34
+  quality_tier_unknown_snr_silence_b: 0.45
+  # split enhance 後の Sidon 救済（``uv sync --extra sidon``）。
+  sidon_after_enhance_split:
+    enabled: true
+    device: auto
+
+snr:
+  frame_ms: 25.0
+  hop_ms: 10.0
+  noise_percentile: 15.0
+  signal_percentile: 60.0
+  min_frames: 4
+
+text:
+  max_text_len: 500
+  min_text_len: 1
+  require_japanese: true
+  phonemize: true
+  g2p_kana: false
+  # 任意: 別途用意したアライメント音素 JSONL と G2P を照合（docs/仕様.md §8.1）
+  # マニフェストの作り方は docs/音素照合マニフェスト.md。有効化前にファイル必須（無いと preprocess が起動時に失敗）
+  phoneme_alignment_check:
+    enabled: false
+    manifest_path: data/aligned_phonemes.jsonl
+    missing_manifest_entry: skip
+    max_token_error_rate: 0.0
+
+# 任意: デコード直後・ターゲット SR のみで軽い足切り（docs/仕様.md §4.1）
+early_audio_gate:
+  enabled: true
+  check_silence_ratio: false
+  check_snr: false
+
+# 任意: 第 1 パスは align のみ → MFA/NFA 等 → 通過後に enhance（既定は Sidon）（§4.1）
+# enhance 内に単独の ``denoise`` method: sgmse があるときのマイクロバッチ上限（Sidon のみのときは未使用）。
+# enhance_phase: interleaved（既定）| after_align_complete（全足切り後に一括エンハンス。ホストRAM増・GPUは分離しやすい）
+two_pass_denoise:
+  enabled: true
+  sgmse_micro_batch_max: 2
+  enhance_phase: interleaved
+
+
+# 任意: NeMo NFA 足切り（Dev Container で NFA_PYTHON / NFA_ALIGN_DIR が通っているとき有効化）
+nfa_gate:
+  enabled: true
+  # NeMo を 1 subprocess 常駐（モデル初回のみロード）。従来のバッチ毎 align.py は persistent_worker: false
+  persistent_worker: true
+  # 単一 GPUで enhance（Sidon 等）直前に NFA 子の VRAM を空けたいとき true（次バッチで NeMo 再ロードのため遅延増）
+  # release_persistent_worker_before_two_pass_enhance: true
+  prefilter:
+    enabled: true
+    # 第1パス（align・未デノイズ）では無音率が高く見えやすい。無音・モーラ・SNR はルートより緩め、ティアは quality_tier_mode に従う。
+    quality_gate_overrides:
+      quality_tier_mode: reject_b
+      max_silence_ratio: 0.54
+      quality_tier_a_max_silence_ratio: 0.44
+      quality_tier_b_max_silence_ratio: 0.54
+      quality_tier_unknown_snr_silence_a: 0.36
+      quality_tier_unknown_snr_silence_b: 0.52
+      min_sec_per_mora: 0.065
+      mora_gate_relax: 0.92
+      min_estimated_snr_db: 7.5
+      silence_ratio_ref_percentile: 90
+  # 親プロセスが抱える波形バッファと NeMo 1 ジョブあたりのピークに効く。共有メモリが厳しいときは 8〜16 程度まで下げる。
+  batch_size: 64
+  # persistent_worker の NeMo init（chunk_batch_size）。バッファードストリーミング利用時は特に下げると効く。
+  worker_chunk_batch_size: 8
+  # compare_tokens_to_g2p: true
+  # # NFA の CTM トークン → OpenJTalk G2P（MFA 用マップと同じ YAML 形式）。草案: cv-preprocess suggest-nfa-g2p-map
+  # nfa_to_g2p_token_map_path: config/nfa_to_openjtalk_phones.yaml
+
+  # enhance（Sidon 等）後は推定 SNR が大きく下がるか、フレームエネルギーが均一で推定不能（None）になりやすい。NFA 二次ゲートでは SNR ハードを外す例。
+  quality_gate_overrides:
+    min_estimated_snr_db: null
+    quality_tier_b_min_snr_db: 6.0
+  quality_gate_profile: null
+
+split:
+  mode: speaker_aware
+  train: 0.85
+  val: 0.10
+  test: 0.05
+  seed: 42
+  emit_split_as_dev: false

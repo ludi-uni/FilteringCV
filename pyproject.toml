@@ -1,0 +1,133 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# 依存の追加・更新後は `uv lock` で uv.lock を更新すること（uv がパッケージマネージャ）
+#
+# CUDA 版 torch / torchaudio（既定: PyTorch 公式 wheel の **cu128** = CUDA 12.x 向け。ドライバ例: CUDA 12.8）
+# - Windows: ホストで GPU ツールチェーンを揃えるより、`.devcontainer`（Linux コンテナ）での開発を推奨。
+# - Linux: ホストに NVIDIA ドライバを入れたうえで、このファイルのまま `uv sync` すれば同じ CUDA ビルドが入る。
+# - RTX 50 系（Blackwell）は古い cu124 wheel では ``no kernel image...`` になりやすい → cu128 を維持。
+# - CPU のみの環境では、この index / sources を外すか、CPU 用 torch の入れ方に切り替えてください。
+# - nightly が必要な場合の例（uv）:
+#   uv pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+# SpeechBrain SGMSE が import する学習コード。PyPI wheel では upfirdn2d の .cpp/.cu が欠けることがあるため Git 固定。
+# ``uv sync --extra sgmse`` で取得（手動の ``uv pip install "sgmse @ git+..." --no-deps`` と同等の取得元）。
+sgmse = { git = "https://github.com/sp-uhh/sgmse.git" }
+
+# Git 版 sgmse の公式メタデータには学習用の巨大な requires-dist が付く。SpeechBrain 推論には不要なため、
+# ロック解決時は依存を空扱いにする（実体は上記 Git から取得。``uv pip install ... --no-deps`` に近い）。
+[[tool.uv.dependency-metadata]]
+name = "sgmse"
+# Git の pyproject の version と一致させる（upstream が上げたら追随）
+version = "0.1.0"
+requires-python = ">=3.10"
+requires-dist = []
+
+[project]
+name = "cv-preprocess"
+version = "0.1.0"
+description = "Common Voice → TTS corpus preprocessing (FilteringCV)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy<2.0",
+  "scipy>=1.11",
+  "PyYAML>=6.0",
+  "pydantic>=2.0",
+  "pydantic-settings>=2.0",
+  "soundfile>=0.12",
+  "librosa>=0.10",
+  "pyloudnorm>=0.1",
+  "typer>=0.12",
+  "tqdm>=4.66",
+  "pyopenjtalk-plus[onnxruntime]",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+# Montreal Forced Aligner（``mfa`` CLI）。ホスト向け。PyPI 単体では kalpy 不足で失敗しがちなので conda-forge 推奨（docs/開発環境.md）。
+# Dev Container では MFA は入れず NeMo NFA 用の ``/opt/nfa-venv`` を使う（NeMo と sgmse の protobuf 要件が衝突するため .venv へ nemo を入れない）。
+mfa = ["montreal-forced-aligner>=3.2,<4"]
+# mispeech/dasheng-denoiser（16 kHz 学習）。初回は HF から重み取得。CUDA 利用時は環境に合わせ torch を別途入れることも可。
+# transformers が torchvision 演算子（例: nms）を間接 import するため、torch / torchaudio と同系の torchvision を明示する。
+dasheng = [
+  "torch>=2.11.0",
+  "torchaudio>=2.11.0",
+  "torchvision>=0.26.0",
+  "transformers>=4.40",
+  "einops>=0.7",
+]
+# jik876/hifi-gan 互換チェックポイント推論（config.json + generator 重み）。``bandwidth_extension`` ステップ用。
+hifigan = [
+  "torch>=2.11.0",
+  "torchaudio>=2.11.0",
+]
+# speechbrain/sgmse-voicebank（16 kHz、反響・ノイズ抑制）。初回は HF から重み取得。
+# ``sgmse`` は ``[tool.uv.sources]`` の Git 参照で入る（torch / torchaudio / torch-ema / ninja は本 extra で明示）。
+sgmse = [
+  "sgmse",
+  "speechbrain>=1.1.0",
+  "gdown>=6.0.0",
+  "h5py>=3.16.0",
+  "ipympl>=0.10.0",
+  "ninja>=1.13.0",
+  "pandas>=2.3.3",
+  "pesq>=0.0.4",
+  "pillow>=12.2.0",
+  "protobuf>=7.34.1",
+  "pyarrow>=24.0.0",
+  "pyroomacoustics>=0.10.0",
+  "pystoi>=0.4.1",
+  "pytorch-lightning>=2.6.1",
+  "sdeint>=0.3.0",
+  "setuptools>=81.0.0",
+  "seaborn>=0.13.2",
+  "torch>=2.11.0",
+  "torch-ema>=0.3",
+  "torch-pesq>=0.1.2",
+  "torchaudio>=2.11.0",
+  "torchvision>=0.26.0",
+  "torchinfo>=1.8.0",
+  "torchsde>=0.2.6",
+  "wandb>=0.26.0",
+
+]
+# NARA-WPE + DeepFilterNet（公式 MIT/Apache-2.0 デュアルの学習済み zip）。deepfilterlib は初回ビルドに Rust（cargo）要。
+wpe_dfn = [
+  "torch>=2.11.0",
+  "torchaudio>=2.11.0",
+  "nara-wpe>=0.0.11",
+  "deepfilternet>=0.5.6",
+]
+# Sidon（HF ``sarulab-speech/sidon-v0.1`` TorchScript + w2v-bert 2.0）。初回推論で重み・SSL 特徴抽出器を取得。
+sidon = [
+  "torch>=2.11.0",
+  "torchaudio>=2.11.0",
+  "transformers>=4.40",
+  "huggingface_hub>=0.20",
+]
+
+[project.scripts]
+cv-preprocess = "cv_preprocess.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cv_preprocess"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
