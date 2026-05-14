@@ -25,3 +25,8 @@ class PendingClip:
     #: prefilter と本番ゲートが同一かつ ``two_pass_denoise`` 無効時のみ。最終 ``run_quality_gate`` の短絡用。
     prefilter_final_gate_reuse: GateResult | None = None
     prefilter_final_gate_fp: str | None = None
+    #: ``asr_gate`` 通過後に付与（未実行・スキップ時は ``None``）。
+    asr_hypothesis: str | None = None
+    asr_confidence: float | None = None
+    asr_char_error_rate: float | None = None
+    asr_phoneme_error_rate: float | None = None

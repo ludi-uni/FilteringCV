@@ -7,6 +7,7 @@ import yaml
 from pydantic import BaseModel, Field, model_validator
 
 from cv_preprocess.config.align_gates import MfaGateConfig, NfaGateConfig
+from cv_preprocess.config.asr_gate import AsrGateConfig
 from cv_preprocess.config.audio_steps import AudioPipelineConfig
 from cv_preprocess.config.aux_pipelines import PhonemeManifestPipelineConfig, SecondaryPipelineConfig
 from cv_preprocess.config.gates_quality import (
@@ -36,6 +37,7 @@ class PipelineConfig(BaseModel):
     text: TextConfig = Field(default_factory=TextConfig)
     mfa_gate: MfaGateConfig = Field(default_factory=MfaGateConfig)
     nfa_gate: NfaGateConfig = Field(default_factory=NfaGateConfig)
+    asr_gate: AsrGateConfig = Field(default_factory=AsrGateConfig)
     early_audio_gate: EarlyAudioGateConfig = Field(default_factory=EarlyAudioGateConfig)
     two_pass_denoise: TwoPassDenoiseConfig = Field(default_factory=TwoPassDenoiseConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
@@ -177,6 +179,15 @@ class PipelineConfig(BaseModel):
             raise ValueError(
                 "nfa_gate.prefilter.enabled は nfa_gate.enabled=true と併用してください "
                 "(NFA 投入前足切りは NFA を使う場合のみ有効)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def asr_compare_needs_phonemize(self) -> PipelineConfig:
+        if self.asr_gate.enabled and self.asr_gate.compare_phonemes and not self.text.phonemize:
+            raise ValueError(
+                "asr_gate.compare_phonemes=true には text.phonemize=true が必要です "
+                "(参照・仮説の音素化に OpenJTalk G2P を使います)"
             )
         return self
 

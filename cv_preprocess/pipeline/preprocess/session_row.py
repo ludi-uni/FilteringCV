@@ -365,6 +365,10 @@ class PreprocessRowMixin:
             self.nfa_batch.append(pending)
             if len(self.nfa_batch) >= self.cfg.nfa_gate.batch_size:
                 self.flush_nfa()
+        elif self.cfg.asr_gate.enabled:
+            self.asr_batch.append(pending)
+            if len(self.asr_batch) >= self.cfg.asr_gate.batch_size:
+                self.flush_asr()
         else:
             self.flush_finalize_survivors([pending])
 

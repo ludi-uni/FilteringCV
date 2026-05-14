@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from cv_preprocess.config.align_gates import MfaGateConfig, MfaPrefilterConfig, NfaGateConfig, NfaPrefilterConfig
+from cv_preprocess.config.asr_gate import AsrGateConfig
 from cv_preprocess.config.audio_steps import (
     AudioPipelineConfig,
     AudioStep,
@@ -37,6 +38,7 @@ from cv_preprocess.config.text import TextConfig
 __all__ = [
     "AudioPipelineConfig",
     "AudioStep",
+    "AsrGateConfig",
     "BandwidthExtensionStep",
     "CLISettings",
     "ClipMetadataFilters",

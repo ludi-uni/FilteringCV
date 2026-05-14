@@ -7,6 +7,7 @@ import traceback
 
 from tqdm import tqdm
 
+from cv_preprocess.audio.asr_batch import close_asr_worker
 from cv_preprocess.audio.mfa_batch import mfa_cli_available, run_mfa_align_batch
 from cv_preprocess.audio.nfa_batch import close_nfa_worker, run_nfa_align_batch
 from cv_preprocess.audio.sgmse_dereverb import maybe_warmup_sgmse
@@ -46,6 +47,7 @@ from cv_preprocess.text.normalize import normalize_for_tts
 from cv_preprocess.text.phoneme_compare import phoneme_sequences_accept
 from cv_preprocess.text.phonemize import g2p_phonemes
 
+from cv_preprocess.pipeline.preprocess.asr_gate_apply import apply_asr_gate
 from cv_preprocess.pipeline.preprocess.session_row import PreprocessRowMixin
 
 
@@ -144,6 +146,8 @@ class PreprocessSession(PreprocessRowMixin):
         self.nfa_batch: list[PendingClip] = []
         self.nfa_utt_counter = 0
         self.nfa_batches_flushed = 0
+        self.asr_batch: list[PendingClip] = []
+        self.asr_batches_flushed = 0
         self.mg_for_mfa = cfg.mfa_gate.model_copy(
             update={"num_jobs": self.mfa_nj_resolved, "batch_size": self.mfa_bs_resolved}
         )
@@ -324,6 +328,18 @@ class PreprocessSession(PreprocessRowMixin):
     def flush_finalize_survivors(self, survivors: list[PendingClip]) -> None:
         if not survivors:
             return
+        if self.cfg.asr_gate.enabled:
+            survivors = apply_asr_gate(
+                self.cfg,
+                survivors,
+                work_parent=self.out_root.resolve(),
+                rejects_path=self.rejects_path,
+                reject_fields=self.reject_fields,
+                reject_reasons=self.reject_reasons,
+            )
+            self.asr_batches_flushed += 1
+        if not survivors:
+            return
         if self.cfg.two_pass_denoise.enabled and self._enhance_phase_is_after_align_complete():
             self.deferred_enhance_queue.extend(survivors)
             return
@@ -499,6 +515,13 @@ class PreprocessSession(PreprocessRowMixin):
         self.nfa_batch.clear()
         self.nfa_batches_flushed += 1
 
+    def flush_asr(self) -> None:
+        if not self.asr_batch:
+            return
+        chunk = list(self.asr_batch)
+        self.asr_batch.clear()
+        self.flush_finalize_survivors(chunk)
+
     def _map_split(self, name: str) -> str:
         if self.cfg.split.emit_split_as_dev and name == "val":
             return "dev"
@@ -522,6 +545,8 @@ class PreprocessSession(PreprocessRowMixin):
                 )
             elif cfg.nfa_gate.enabled:
                 align_banner = f" nfa_batch_size={cfg.nfa_gate.batch_size}"
+            if cfg.asr_gate.enabled:
+                align_banner += f" asr_batch_size={cfg.asr_gate.batch_size}"
             if two_pass_uses_split_pipelines(cfg):
                 assert cfg.audio_pipeline_align is not None and cfg.audio_pipeline_enhance is not None
                 pipe_banner = (
@@ -577,6 +602,9 @@ class PreprocessSession(PreprocessRowMixin):
                     elif cfg.nfa_gate.enabled:
                         pf["nfa_buf"] = len(self.nfa_batch)
                         pf["nfa_bs"] = cfg.nfa_gate.batch_size
+                    if cfg.asr_gate.enabled:
+                        pf["asr_buf"] = len(self.asr_batch)
+                        pf["asr_bs"] = cfg.asr_gate.batch_size
                     if cfg.two_pass_denoise.enabled and self._enhance_phase_is_after_align_complete():
                         pf["defer"] = len(self.deferred_enhance_queue)
                     row_iter.set_postfix(**pf, refresh=False)
@@ -585,6 +613,9 @@ class PreprocessSession(PreprocessRowMixin):
         self.flush_nfa()
         if cfg.nfa_gate.enabled:
             close_nfa_worker()
+        self.flush_asr()
+        if cfg.asr_gate.enabled:
+            close_asr_worker()
 
         if (
             cfg.two_pass_denoise.enabled
@@ -762,6 +793,24 @@ class PreprocessSession(PreprocessRowMixin):
                 if cfg.nfa_gate.nfa_to_g2p_token_map_path
                 else None,
                 "nfa_to_g2p_token_map_size": len(self.nfa_g2p_token_map),
+            },
+            "asr_gate": {
+                "enabled": cfg.asr_gate.enabled,
+                "batches_flushed": self.asr_batches_flushed,
+                "backend": cfg.asr_gate.backend,
+                "pretrained_name": cfg.asr_gate.pretrained_name,
+                "model_path": str(cfg.asr_gate.model_path.resolve())
+                if cfg.asr_gate.model_path
+                else None,
+                "sample_rate_hz": cfg.asr_gate.sample_rate_hz,
+                "batch_size": cfg.asr_gate.batch_size,
+                "persistent_worker": cfg.asr_gate.persistent_worker,
+                "mock_mode": cfg.asr_gate.mock_mode,
+                "compare_text": cfg.asr_gate.compare_text,
+                "compare_phonemes": cfg.asr_gate.compare_phonemes,
+                "max_char_error_rate": cfg.asr_gate.max_char_error_rate,
+                "max_phoneme_error_rate": cfg.asr_gate.max_phoneme_error_rate,
+                "min_asr_confidence": cfg.asr_gate.min_asr_confidence,
             },
         }
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

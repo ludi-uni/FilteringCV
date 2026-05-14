@@ -123,6 +123,10 @@ def process_pending_to_acceptance(
         "edge_click_confidence": ameta.get("edge_click_confidence"),
         "mora_count": gate.mora_count,
         "min_required_duration_sec": gate.min_required_duration_sec,
+        "asr_hypothesis": pending.asr_hypothesis,
+        "asr_confidence": pending.asr_confidence,
+        "asr_char_error_rate": pending.asr_char_error_rate,
+        "asr_phoneme_error_rate": pending.asr_phoneme_error_rate,
     }
     accepted.append(rec)
     return accept_idx
