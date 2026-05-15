@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cv_preprocess.config import ClipMetadataFilters
+from cv_preprocess.config.pipeline import PipelineConfig
 
 
 def _relax_csv_field_limit() -> None:
@@ -85,6 +86,96 @@ def load_validated_tsv(
             )
             stats["rows_ok"] += 1
     return rows, stats
+
+
+@dataclass(frozen=True)
+class ClipRowsPipelineLoad:
+    """``validated.tsv`` を preprocess / phoneme-manifest / suggest-* が共有する手順で読んだ結果。"""
+
+    rows: list[ClipRow]
+    load_stats: dict[str, int]
+    include_client_ids: list[str] | None
+    rows_after_speaker_filter: int
+    rows_after_metadata_filter: int
+    rows_after_max_clips_cap: int
+
+
+def prepare_clip_rows(
+    rows: list[ClipRow],
+    cfg: PipelineConfig,
+    *,
+    include_client_ids: list[str] | None = None,
+    apply_speaker_merge: bool = True,
+    sort_by_path: bool = True,
+    apply_input_max_clips: bool = False,
+    max_clips_head: int | None = None,
+) -> tuple[list[ClipRow], int, int, int]:
+    """話者・メタフィルタ →（任意で path ソート・件数上限）→（任意で話者マージ）。
+
+    戻り値: ``(prepared_rows, rows_after_speaker_filter, rows_after_metadata_filter, rows_after_max_clips_cap)``。
+    ``filter_by_speakers`` / ``filter_by_clip_metadata`` は新しいリストを返すため、
+    入力 ``rows`` の ``client_id`` は話者マージを有効にしない限り変わらない。
+    """
+    include_ids = include_client_ids if include_client_ids is not None else (cfg.speakers.include_client_ids or None)
+    filtered = filter_by_speakers(rows, include_ids)
+    rows_after_speaker = len(filtered)
+    filtered = filter_by_clip_metadata(filtered, cfg.speakers.clip_metadata_filters)
+    rows_after_meta = len(filtered)
+    if sort_by_path:
+        filtered = sorted(filtered, key=lambda r: r.path)
+    if max_clips_head is not None and max_clips_head >= 0:
+        filtered = filtered[: int(max_clips_head)]
+    elif apply_input_max_clips:
+        cap = cfg.input.max_clips
+        if cap is not None and len(filtered) > int(cap):
+            filtered = filtered[: int(cap)]
+    rows_after_cap = len(filtered)
+    if apply_speaker_merge:
+        apply_merge_filtered_speakers_as_one(
+            filtered,
+            enabled=cfg.speakers.merge_filtered_speakers_as_one,
+            merged_client_id=cfg.speakers.resolved_merged_speaker_client_id(),
+        )
+    return filtered, rows_after_speaker, rows_after_meta, rows_after_cap
+
+
+def load_clip_rows_for_pipeline(
+    cfg: PipelineConfig,
+    *,
+    apply_input_max_clips: bool = False,
+    max_clips_head: int | None = None,
+    apply_speaker_merge: bool = True,
+    sort_by_path: bool = True,
+) -> ClipRowsPipelineLoad:
+    """話者・メタフィルタ → path ソート →（任意で件数上限）→話者マージ、までを共通化する。
+
+    * **apply_input_max_clips** が真のとき ``cfg.input.max_clips`` を適用し、
+      件数が上限を超える場合のみ先頭に切り詰める（preprocess と同じ）。
+    * **max_clips_head** が非 ``None`` かつ ``>= 0`` のときは ``rows[:N]`` を取る
+      （``suggest-nfa-g2p-map`` の ``--max-clips`` と同じ）。この場合 ``cfg.input.max_clips`` は見ない。
+    * **scan** は ``apply_speaker_merge=False``・``sort_by_path=False`` で同関数を使う。
+    """
+    root = cfg.input.corpus_root
+    tsv_path = root / cfg.input.clip_tsv
+    rows, load_stats = load_validated_tsv(tsv_path)
+    include_ids = cfg.speakers.include_client_ids or None
+    prepared, rows_after_speaker, rows_after_meta, rows_after_cap = prepare_clip_rows(
+        rows,
+        cfg,
+        include_client_ids=include_ids,
+        apply_speaker_merge=apply_speaker_merge,
+        sort_by_path=sort_by_path,
+        apply_input_max_clips=apply_input_max_clips,
+        max_clips_head=max_clips_head,
+    )
+    return ClipRowsPipelineLoad(
+        rows=prepared,
+        load_stats=load_stats,
+        include_client_ids=include_ids,
+        rows_after_speaker_filter=rows_after_speaker,
+        rows_after_metadata_filter=rows_after_meta,
+        rows_after_max_clips_cap=rows_after_cap,
+    )
 
 
 def filter_by_speakers(rows: list[ClipRow], include: list[str] | None) -> list[ClipRow]:

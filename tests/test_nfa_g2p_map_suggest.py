@@ -8,8 +8,8 @@ import soundfile as sf
 
 from cv_preprocess.audio.nfa_batch import NfaClipResult
 from cv_preprocess.config import PipelineConfig
-from cv_preprocess.pipeline import nfa_g2p_map_suggest as nfa_suggest_mod
-from cv_preprocess.pipeline.mfa_g2p_map_suggest import _g2p_tokens
+from cv_preprocess.pipeline import nfa_g2p_map_suggest_pipeline as nfa_pipeline_mod
+from cv_preprocess.pipeline.g2p_map_suggest_core import _g2p_tokens
 from cv_preprocess.pipeline.nfa_g2p_map_suggest import run_nfa_g2p_map_suggest
 
 
@@ -38,7 +38,7 @@ def test_run_nfa_g2p_map_suggest_smoke(tmp_path: Path, monkeypatch: pytest.Monke
             out.append(NfaClipResult(ok=True, token_string=toks))
         return out
 
-    monkeypatch.setattr(nfa_suggest_mod, "run_nfa_align_batch", fake_nfa)
+    monkeypatch.setattr(nfa_pipeline_mod, "run_nfa_align_batch", fake_nfa)
 
     cfg = PipelineConfig.model_validate(
         {

@@ -43,5 +43,7 @@ def test_default_yaml_loads() -> None:
     assert enh_types[0] == "decode"
     assert enh_types[1] == "sidon_restore"
     assert cfg.quality_gate.sidon_after_enhance_split.enabled is True
-    tail_steps = [s.type for s in cfg.audio_pipeline_enhance.steps[-4:]]
-    assert tail_steps.count("trim_silence") >= 1
+    # 既定は two_pass: 無音トリムは align 側（enhance は decode 注入後に Sidon 等のみのことが多い）
+    assert cfg.audio_pipeline_align is not None
+    align_types = [s.type for s in cfg.audio_pipeline_align.steps]
+    assert align_types.count("trim_silence") >= 1

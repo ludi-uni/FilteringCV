@@ -1,4 +1,5 @@
-# Copy and edit `input.corpus_root` to your extracted Common Voice language directory (e.g. .../ja).
+# コピーして `input.corpus_root` 等を編集する雛形。機密や環境依存は `config/default.local.yaml`（.gitignore）に分離し `cv-preprocess … -c …` で指定。
+# 処理ラインは `config/default.yaml` と揃えています（差分は主にパス・話者・試行用 max_clips）。少数だけ試すときは `input.max_clips` に整数を指定。
 
 input:
   corpus_root: data/cv-corpus-placeholder/ja
@@ -38,7 +39,7 @@ speakers:
     down_votes: null
 
 # two_pass_denoise + audio_pipeline_align / audio_pipeline_enhance 指定時: MFA/NFA 前は align のみ、通過後に enhance のみ実行。
-# 既定の enhance は Sidon（``type: sidon_restore``）。SGMSE / Dasheng に戻す場合はステップと ``uv sync`` の extra を合わせる。
+# 本リポジトリ既定の enhance は Sidon（``type: sidon_restore``）。SGMSE や Dasheng に戻す場合は該当ステップと ``uv sync`` の extra を合わせる。
 # 従来の単一 audio_pipeline 運用は align/enhance を削り two_pass_denoise.enabled: false にする。
 audio_pipeline_align:
   target_sample_rate: 24000
@@ -48,26 +49,7 @@ audio_pipeline_align:
     # 先頭で target SR に揃える: early_audio_gate・品質ゲート・NFA 前処理が同一サンプルレート前提になる
     - type: resample
       sr: 24000
-    - type: lowpass
-      cutoff_hz: 11000
-    - type: highpass
-      cutoff_hz: 100
     # head_tail_db が小さいほど先頭末尾の無音を厳しく落とす。学習で語頭語尾が詰まりすぎる場合は 34〜42 程度へ。
-    - type: trim_silence
-      max_keep_sec: 30.0
-      head_tail_db: 36
-      trim_frame_length: 1024
-      trim_hop_length: 256
-    - type: edge_ui_click
-      lead_scan_ms: 300
-      trail_scan_ms: 580
-      max_transient_ms: 400
-      # null: 録音開始クリックの直後にすぐ発話が始まる行でも除去。極弱語頭はメタ確認推奨。
-      lead_click_requires_pre_silence_ms: 55
-      peak_above_noise_db: 22
-      removal: mute_then_trim
-      # null: 語尾〜停止クリックの無音が短い行でも除去（55ms 要求だと実データで末尾が残りやすい）。
-      trail_click_requires_silence_ms: 100
     - type: trim_silence
       max_keep_sec: 30.0
       head_tail_db: 36
@@ -83,43 +65,23 @@ audio_pipeline_enhance:
     # 既定: Sidon（``uv sync --extra sidon``）。SGMSE にする例: extra sgmse + ``type: denoise`` method: sgmse へ差し替え
     - type: sidon_restore
       device: auto
-    - type: edge_ui_click
-      # denoise / lip 等のスペクトル系の直後に実行（run_steps_on_array がキューして trim 直前でフラッシュ）
-      post_spectral: false
-      lead_scan_ms: 300
-      trail_scan_ms: 580
-      max_transient_ms: 400
-      # null: 録音開始クリックの直後にすぐ発話が始まる行でも除去。極弱語頭はメタ確認推奨。
-      lead_click_requires_pre_silence_ms: 55
-      peak_above_noise_db: 22
-      removal: mute_then_trim
-      # null: 語尾〜停止クリックの無音が短い行でも除去（55ms 要求だと実データで末尾が残りやすい）。
-      trail_click_requires_silence_ms: 55
-    - type: trim_silence
-      max_keep_sec: 15.0
-      # 大きいほど末尾の弱い「す」等を残しやすい（librosa.effects.trim の top_db）
-      head_tail_db: 50
-      trim_frame_length: 1024
-      trim_hop_length: 256
+    # - type: denoise
+    #   method: wpe_deepfilternet
+    #   deepfilternet_model: DeepFilterNet3
+    #   deepfilternet_device: auto
+    #   deepfilternet_log_level: none
+    # - type: lip_noise_repair
+    # - type: lip_noise_suppress
+    #   n_fft: 2048
+    #   hop_length: 512
+    #   band_low_hz: 1400
+    #   band_high_hz: 10000
+    #   spike_ratio: 7.0
+    #   max_burst_frames: 6
+    #   mag_gain: 0.7
     - type: normalize
       method: loudness
       integrated_lufs: -23.0
-    - type: trim_silence
-      max_keep_sec: 30.0
-      trim_sides: trailing
-      max_trailing_spike_frames: 5
-      head_tail_db: 44
-      trim_frame_length: 1024
-      trim_hop_length: 256
-    - type: trim_silence
-      max_keep_sec: 30.0
-      trim_sides: trailing
-      max_trailing_spike_frames: 5
-      head_tail_db: 44
-      trim_frame_length: 1024
-      trim_hop_length: 256
-      pad_head_ms: 75
-      pad_tail_ms: 120
     - type: save_wav
       bit_depth: 16
 
@@ -149,7 +111,7 @@ quality_gate:
   quality_tier_a_max_clipping_ratio: 0.006
   quality_tier_unknown_snr_silence_a: 0.34
   quality_tier_unknown_snr_silence_b: 0.45
-  # split enhance 後の Sidon 救済（``uv sync --extra sidon``）。
+  # split enhance 後の Sidon 救済（``uv sync --extra sidon``）。enhance 通過後ゲートで落ちた波形への再適用。
   sidon_after_enhance_split:
     enabled: true
     device: auto
@@ -181,7 +143,7 @@ early_audio_gate:
   check_silence_ratio: false
   check_snr: false
 
-# 任意: 第 1 パスは align のみ → MFA/NFA 等 → 通過後に enhance（既定は Sidon）（§4.1）
+# 任意: 第 1 パスは align のみ → MFA/NFA 等 → 通過後に enhance（既定は Sidon チェーン）（§4.1）
 # enhance 内に単独の ``denoise`` method: sgmse があるときのマイクロバッチ上限（Sidon のみのときは未使用）。
 # enhance_phase: interleaved（既定）| after_align_complete（全足切り後に一括エンハンス。ホストRAM増・GPUは分離しやすい）
 two_pass_denoise:
@@ -195,7 +157,7 @@ nfa_gate:
   enabled: true
   # NeMo を 1 subprocess 常駐（モデル初回のみロード）。従来のバッチ毎 align.py は persistent_worker: false
   persistent_worker: true
-  # 単一 GPUで enhance（Sidon 等）直前に NFA 子の VRAM を空けたいとき true（次バッチで NeMo 再ロードのため遅延増）
+  # 単一 GPU で enhance（Sidon 等）直前に NFA 子の VRAM を空けたいとき true（次バッチで NeMo 再ロードのため遅延増）
   # release_persistent_worker_before_two_pass_enhance: true
   prefilter:
     enabled: true
@@ -212,7 +174,7 @@ nfa_gate:
       min_estimated_snr_db: 7.5
       silence_ratio_ref_percentile: 90
   # 親プロセスが抱える波形バッファと NeMo 1 ジョブあたりのピークに効く。共有メモリが厳しいときは 8〜16 程度まで下げる。
-  batch_size: 64
+  batch_size: 32
   # persistent_worker の NeMo init（chunk_batch_size）。バッファードストリーミング利用時は特に下げると効く。
   worker_chunk_batch_size: 8
   # compare_tokens_to_g2p: true
@@ -225,6 +187,33 @@ nfa_gate:
     quality_tier_b_min_snr_db: 6.0
   quality_gate_profile: null
 
+asr_gate:
+  enabled: true
+  backend: parakeet
+  # model_name は Hugging Face の repo_id（誤り例: parakeet-tdt-0.6b-v3-ja → 存在せず 401）。
+  # 日本語 CTC: nvidia/parakeet-tdt_ctc-0.6b-ja（NFA 既定と同系）。多言語 TDT: nvidia/parakeet-tdt-0.6b-v3（-ja なし）。
+  model_name: nvidia/parakeet-tdt_ctc-0.6b-ja
+  sample_rate_hz: 16000
+
+  min_asr_confidence: 0.70
+  max_char_error_rate: 0.20
+  max_phoneme_error_rate: 0.25
+
+  compare_text: true
+  compare_phonemes: true
+
+  normalize_reference_text: true
+  normalize_hypothesis_text: true
+  # 実装時: 既存 normalize_for_tts を使う / 拡張する / 別正規化器を指す、のいずれかを明示
+  text_normalizer: openjtalk_like
+
+  persistent_worker: true
+  batch_size: 32
+  num_workers: 1
+
+  missing_transcript: reject
+  decode_failure: reject
+
 split:
   mode: speaker_aware
   train: 0.85
@@ -232,3 +221,21 @@ split:
   test: 0.05
   seed: 42
   emit_split_as_dev: false
+
+# 二次パイプライン（``cv-preprocess secondary``、docs/追加仕様.md §11）。有効化する場合はコメントを外し `audio_pipeline` を編集。
+# `steps` に ``type: bandwidth_extension`` を置く例は [追加仕様.md §12](docs/追加仕様.md) と `cv_preprocess/config/audio_steps.py` の BandwidthExtensionStep を参照。
+# secondary:
+#   output_root: out/cv_tts_secondary
+#   input_root: null
+#   input_manifest: null
+#   audio_pipeline:
+#     target_sample_rate: 24000
+#     channels: 1
+#     audio_pipeline_id: secondary_v1
+#     steps:
+#       - type: resample
+#         sr: 24000
+#       - type: save_wav
+#         bit_depth: 16
+#   quality_gate_overrides: {}
+#   quality_gate_profile: null

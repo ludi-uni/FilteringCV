@@ -9,19 +9,27 @@ from typing import Any
 
 from tqdm import tqdm
 
-from cv_preprocess.audio.textgrid_phones import extract_phone_tokens_from_textgrid
 from cv_preprocess.config import PipelineConfig
-from cv_preprocess.io.tsv_loader import (
-    ClipRow,
-    apply_merge_filtered_speakers_as_one,
-    filter_by_clip_metadata,
-    filter_by_speakers,
-    load_validated_tsv,
+from cv_preprocess.io.tsv_loader import ClipRow, load_clip_rows_for_pipeline
+from cv_preprocess.pipeline.export import write_json_report
+from cv_preprocess.pipeline.g2p_map_suggest_core import (
+    try_load_mfa_textgrid_phone_tokens,
+    try_normalize_and_g2p_tokens,
+    try_normalize_clip_text,
 )
-from cv_preprocess.text.language_detect import passes_japanese_policy, passes_locale_expected
 from cv_preprocess.text.mfa_token_map import load_mfa_token_map_yaml, map_mfa_space_separated_to_g2p_tokens
-from cv_preprocess.text.normalize import normalize_for_tts
-from cv_preprocess.text.phonemize import g2p_phonemes
+
+
+def new_phoneme_manifest_counts() -> dict[str, int]:
+    return {
+        "rows_written": 0,
+        "skipped_text_locale": 0,
+        "skipped_text_not_japanese": 0,
+        "skipped_text_length": 0,
+        "skipped_phonemize_failed": 0,
+        "skipped_missing_textgrid": 0,
+        "skipped_empty_phonemes": 0,
+    }
 
 
 def _resolve_phoneme_manifest_settings(
@@ -88,32 +96,17 @@ def run_phoneme_manifest(
             "記号体系が OpenJTalk G2P と異なる場合は preprocess の照合で不一致になりやすいです。"
         )
 
+    loaded = load_clip_rows_for_pipeline(cfg)
+    rows = loaded.rows
+    load_stats = loaded.load_stats
     root = cfg.input.corpus_root
     tsv_path = root / cfg.input.clip_tsv
-    rows, load_stats = load_validated_tsv(tsv_path)
-    include_ids = cfg.speakers.include_client_ids or None
-    rows = filter_by_speakers(rows, include_ids)
-    rows = filter_by_clip_metadata(rows, cfg.speakers.clip_metadata_filters)
-    rows = sorted(rows, key=lambda r: r.path)
-    apply_merge_filtered_speakers_as_one(
-        rows,
-        enabled=cfg.speakers.merge_filtered_speakers_as_one,
-        merged_client_id=cfg.speakers.resolved_merged_speaker_client_id(),
-    )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists():
         out_path.unlink()
 
-    counts: dict[str, int] = {
-        "rows_written": 0,
-        "skipped_text_locale": 0,
-        "skipped_text_not_japanese": 0,
-        "skipped_text_length": 0,
-        "skipped_phonemize_failed": 0,
-        "skipped_missing_textgrid": 0,
-        "skipped_empty_phonemes": 0,
-    }
+    counts = new_phoneme_manifest_counts()
 
     if show_progress:
         print(
@@ -128,37 +121,25 @@ def run_phoneme_manifest(
 
     with out_path.open("w", encoding="utf-8") as out_f:
         for row in row_iter:
-            if not passes_locale_expected(row.locale, cfg.input.locale_expected):
-                counts["skipped_text_locale"] += 1
-                continue
-            text_norm = normalize_for_tts(row.sentence)
-            if not passes_japanese_policy(text_norm, cfg.text.require_japanese):
-                counts["skipped_text_not_japanese"] += 1
-                continue
-            tl = len(text_norm)
-            if tl < cfg.text.min_text_len or tl > cfg.text.max_text_len:
-                counts["skipped_text_length"] += 1
-                continue
-
             if src == "g2p_text":
                 if not cfg.text.phonemize:
                     raise ValueError("phoneme-manifest g2p_text には text.phonemize=true が必要です。")
-                try:
-                    phonemes = g2p_phonemes(text_norm, kana=cfg.text.g2p_kana)
-                except Exception:
-                    counts["skipped_phonemize_failed"] += 1
+                text_g2p = try_normalize_and_g2p_tokens(row, cfg, counts)
+                if text_g2p is None:
                     continue
+                _text_norm, g2p_toks = text_g2p
+                phonemes = " ".join(g2p_toks)
             else:
                 assert mfa_root is not None
-                stem = Path(row.path).stem
-                tg_path = mfa_root / f"{stem}.TextGrid"
-                if not tg_path.is_file():
-                    counts["skipped_missing_textgrid"] += 1
+                if try_normalize_clip_text(row, cfg, counts) is None:
                     continue
-                try:
-                    mfa_toks = extract_phone_tokens_from_textgrid(tg_path)
-                except Exception:
-                    counts["skipped_missing_textgrid"] += 1
+                mfa_toks = try_load_mfa_textgrid_phone_tokens(
+                    row.path,
+                    mfa_root,
+                    counts,
+                    empty_count_key="skipped_empty_phonemes",
+                )
+                if mfa_toks is None:
                     continue
                 phonemes = map_mfa_space_separated_to_g2p_tokens(" ".join(mfa_toks), token_map)
                 if not phonemes.strip():
@@ -186,5 +167,6 @@ def run_phoneme_manifest(
         "mfa_token_map_size": len(token_map),
         "text_g2p_kana": cfg.text.g2p_kana,
     }
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_report(report_path, report)
+    report["report_path"] = str(report_path.resolve())
     return report

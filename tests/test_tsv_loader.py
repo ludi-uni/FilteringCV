@@ -3,7 +3,9 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from cv_preprocess.io.tsv_loader import load_validated_tsv
+from cv_preprocess.config import PipelineConfig
+from cv_preprocess.io.tsv_loader import load_validated_tsv, prepare_clip_rows
+from cv_preprocess.pipeline.scan import scan_corpus
 
 
 def test_load_validated_tsv_multiline_quoted_sentence_merges_physical_lines(tmp_path: Path) -> None:
@@ -83,3 +85,65 @@ def test_load_validated_tsv_strips_utf8_bom(tmp_path: Path) -> None:
     loaded, stats = load_validated_tsv(tsv)
     assert stats["rows_ok"] == 1
     assert loaded[0].client_id == "c1"
+
+
+def _write_minimal_tsv(tmp_path: Path, lines: list[str]) -> Path:
+    tsv = tmp_path / "validated.tsv"
+    header = (
+        "client_id\tpath\tsentence_id\tsentence\tsentence_domain\t"
+        "up_votes\tdown_votes\tage\tgender\taccents\tvariant\tlocale\tsegment\n"
+    )
+    tsv.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
+    return tsv
+
+
+def test_prepare_clip_rows_speaker_filter_without_merge(tmp_path: Path) -> None:
+    corp = tmp_path / "ja"
+    corp.mkdir()
+    _write_minimal_tsv(
+        corp,
+        [
+            "keep\ta.mp3\ts\thello\t\t2\t0\t\t\t\t\tja\t",
+            "drop\tb.mp3\ts\tworld\t\t2\t0\t\t\t\t\tja\t",
+        ],
+    )
+    cfg = PipelineConfig.model_validate(
+        {
+            "input": {"corpus_root": corp},
+            "speakers": {"include_client_ids": ["keep"]},
+        }
+    )
+    rows, _ = load_validated_tsv(corp / "validated.tsv")
+    filtered, after_sp, after_meta, after_cap = prepare_clip_rows(
+        rows,
+        cfg,
+        apply_speaker_merge=False,
+        sort_by_path=False,
+    )
+    assert after_sp == 1
+    assert after_meta == 1
+    assert after_cap == 1
+    assert [r.client_id for r in filtered] == ["keep"]
+    assert [r.client_id for r in rows] == ["keep", "drop"]
+
+
+def test_scan_corpus_uses_shared_row_filters(tmp_path: Path) -> None:
+    corp = tmp_path / "ja"
+    (corp / "clips").mkdir(parents=True)
+    _write_minimal_tsv(
+        corp,
+        [
+            "c1\ta.mp3\ts\thello\t\t2\t0\t\t\t\t\tja\t",
+            "c2\tb.mp3\ts\tworld\t\t2\t0\t\t\t\t\tja\t",
+        ],
+    )
+    cfg = PipelineConfig.model_validate(
+        {
+            "input": {"corpus_root": corp},
+            "speakers": {"include_client_ids": ["c1"]},
+        }
+    )
+    info = scan_corpus(cfg)
+    assert info["rows_after_speaker_filter"] == 1
+    assert info["rows_after_clip_metadata_filter"] == 1
+    assert info["unique_client_ids"] == 2

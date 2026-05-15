@@ -4,7 +4,7 @@ from collections import Counter
 from pathlib import Path
 
 from cv_preprocess.config import PipelineConfig
-from cv_preprocess.io.tsv_loader import filter_by_clip_metadata, filter_by_speakers, load_validated_tsv
+from cv_preprocess.io.tsv_loader import load_validated_tsv, prepare_clip_rows
 
 
 def _first_n_unique_client_ids(rows: list, n: int = 15) -> list[str]:
@@ -33,8 +33,14 @@ def scan_corpus(cfg: PipelineConfig) -> dict:
     tsv = root / cfg.input.clip_tsv
     rows, stats = load_validated_tsv(tsv)
     include = cfg.speakers.include_client_ids or None
-    filtered = filter_by_speakers(rows, include)
-    filtered = filter_by_clip_metadata(filtered, cfg.speakers.clip_metadata_filters)
+    filtered, rows_after_speaker, rows_after_metadata, _ = prepare_clip_rows(
+        rows,
+        cfg,
+        include_client_ids=include,
+        apply_speaker_merge=False,
+        sort_by_path=False,
+    )
+
     unique_client_ids_after_filters = len({r.client_id.strip() for r in filtered})
     unique_client_ids_effective = (
         1
@@ -44,8 +50,7 @@ def scan_corpus(cfg: PipelineConfig) -> dict:
     clients = Counter(r.client_id for r in rows)
     missing_audio: list[str] = []
     clips = root / cfg.input.audio_subdir
-    sample_rows = filtered
-    for r in sample_rows[: min(5000, len(sample_rows))]:
+    for r in filtered[: min(5000, len(filtered))]:
         p = clips / r.path
         if not p.is_file():
             missing_audio.append(r.path)
@@ -53,7 +58,7 @@ def scan_corpus(cfg: PipelineConfig) -> dict:
     sample_ids = _first_n_unique_client_ids(rows, 15)
 
     warnings: list[str] = []
-    if include and len(filter_by_speakers(rows, include)) == 0:
+    if include and rows_after_speaker == 0:
         warnings.append(
             "speakers.include_client_ids に一致する行が 0 件です。"
             " 別リリースでは client_id が変わります。"
@@ -61,7 +66,7 @@ def scan_corpus(cfg: PipelineConfig) -> dict:
             " ファイル上で先頭列に見えるハッシュでも client_id としては存在しないことがあります。"
             " 下の sample_client_ids_from_parsed_tsv を設定に使うか、include_client_ids: [] で全話者にしてください。"
         )
-    if cfg.speakers.clip_metadata_filters.is_active() and len(filtered) == 0 and len(rows) > 0:
+    if cfg.speakers.clip_metadata_filters.is_active() and rows_after_metadata == 0 and len(rows) > 0:
         warnings.append(
             "speakers.clip_metadata_filters 適用後に 0 件です。"
             " 各軸の許容リストに明示的に \"\" を含めない限り、TSV でその列が空欄の行は除外されます。"
@@ -81,8 +86,8 @@ def scan_corpus(cfg: PipelineConfig) -> dict:
     return {
         "tsv_path": str(tsv),
         "stats": stats,
-        "rows_after_speaker_filter": len(filter_by_speakers(rows, include)),
-        "rows_after_clip_metadata_filter": len(filtered),
+        "rows_after_speaker_filter": rows_after_speaker,
+        "rows_after_clip_metadata_filter": rows_after_metadata,
         "merge_filtered_speakers_as_one": cfg.speakers.merge_filtered_speakers_as_one,
         "merged_speaker_client_id_effective": (
             cfg.speakers.resolved_merged_speaker_client_id()

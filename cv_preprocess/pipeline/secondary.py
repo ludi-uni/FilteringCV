@@ -12,7 +12,7 @@ from cv_preprocess.audio.decode import load_audio
 from cv_preprocess.audio.pipeline import run_steps_on_array
 from cv_preprocess.audio.quality_gate import run_quality_gate
 from cv_preprocess.config import PipelineConfig, QualityGateConfig
-from cv_preprocess.pipeline.export import append_jsonl, write_reject_row, write_wav_16bit
+from cv_preprocess.pipeline.export import append_jsonl, write_json_report, write_reject_row, write_wav_16bit
 from cv_preprocess.pipeline.ljspeech_tsv import write_ljspeech_validated_tsv
 from cv_preprocess.text.mora_estimate import mora_count_for_text
 
@@ -326,5 +326,5 @@ def run_secondary(cfg: PipelineConfig, *, show_progress: bool = True) -> dict[st
         "quality_gate_profile": sec.quality_gate_profile,
         "secondary_quality_gate": qg.model_dump(),
     }
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_report(report_path, report)
     return report

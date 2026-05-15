@@ -41,6 +41,11 @@ def append_jsonl(path: Path, obj: dict) -> None:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
+def write_json_report(path: Path, report: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def write_reject_row(path: Path, row: dict, fieldnames: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     exists = path.exists()
