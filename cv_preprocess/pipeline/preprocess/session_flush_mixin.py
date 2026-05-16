@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 import traceback
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from tqdm import tqdm
 
@@ -20,10 +22,44 @@ from cv_preprocess.pipeline.preprocess.types import PendingClip
 from cv_preprocess.text.mfa_token_map import map_mfa_space_separated_to_g2p_tokens
 from cv_preprocess.text.normalize import normalize_for_tts
 from cv_preprocess.text.phoneme_compare import phoneme_sequences_accept
-from cv_preprocess.text.phonemize import g2p_phonemes
+from cv_preprocess.text.phonemize import g2p_phonemes_for_dataset
 
 
 class PreprocessFlushMixin:
+    def _reject_pending_clip(self, p: PendingClip, reason: str) -> None:
+        write_reject_row(
+            self.rejects_path,
+            {
+                "source_path": p.row.path,
+                "client_id": p.row.client_id,
+                "reason": reason,
+                "sentence_excerpt": p.excerpt,
+            },
+            self.reject_fields,
+        )
+        self.reject_reasons[reason] = self.reject_reasons.get(reason, 0) + 1
+
+    def _survivors_after_align_batch(
+        self,
+        batch: list[PendingClip],
+        results: Sequence[Any],
+        *,
+        align_fail_reason: str,
+        post_align_reject: Callable[[PendingClip, Any], str | None],
+    ) -> list[PendingClip]:
+        """align が成功したクリップに対し ``post_align_reject`` で理由を返したら拒否、``None`` なら survivor。"""
+        survivors: list[PendingClip] = []
+        for p, res in zip(batch, results, strict=True):
+            if not res.ok:
+                self._reject_pending_clip(p, align_fail_reason)
+                continue
+            rej = post_align_reject(p, res)
+            if rej is not None:
+                self._reject_pending_clip(p, rej)
+                continue
+            survivors.append(p)
+        return survivors
+
     def _enhance_phase_is_after_align_complete(self) -> bool:
         c = self.cfg
         return (
@@ -58,6 +94,41 @@ class PreprocessFlushMixin:
         self.reject_reasons["two_pass_denoise_failed"] = (
             self.reject_reasons.get("two_pass_denoise_failed", 0) + 1
         )
+
+    def _run_asr_gate_on_pending(self, pending: list[PendingClip]) -> list[PendingClip]:
+        """最終（enhance 後）波形に対する ASR ゲート。``two_pass`` 無効時は pass1 出力が対象。"""
+        if not pending or not self.cfg.asr_gate.enabled:
+            return list(pending)
+        return apply_asr_gate(
+            self.cfg,
+            pending,
+            work_parent=self.out_root.resolve(),
+            rejects_path=self.rejects_path,
+            reject_fields=self.reject_fields,
+            reject_reasons=self.reject_reasons,
+        )
+
+    def _accept_pending_list(self, pending: list[PendingClip]) -> None:
+        if not pending:
+            return
+        cfg = self.cfg
+        if cfg.speakers.max_clips_per_speaker is not None:
+            pending = sorted(pending, key=lambda p: p.row.path)
+        survivors = self._run_asr_gate_on_pending(pending)
+        for p in survivors:
+            self.accept_idx = process_pending_to_acceptance(
+                p,
+                cfg=cfg,
+                root=self.root,
+                out_root=self.out_root,
+                lang=self.lang,
+                rejects_path=self.rejects_path,
+                reject_fields=self.reject_fields,
+                reject_reasons=self.reject_reasons,
+                accepted=self.accepted,
+                accept_idx=self.accept_idx,
+                accepted_count_by_speaker=self.accepted_count_by_speaker,
+            )
 
     def _enhance_survivors_and_accept(
         self,
@@ -105,32 +176,9 @@ class PreprocessFlushMixin:
                             except Exception as e2:
                                 self._two_pass_denoise_exception(p, e2)
                                 continue
-                            self.accept_idx = process_pending_to_acceptance(
-                                p_fin,
-                                cfg=cfg,
-                                root=self.root,
-                                out_root=self.out_root,
-                                lang=self.lang,
-                                rejects_path=self.rejects_path,
-                                reject_fields=self.reject_fields,
-                                reject_reasons=self.reject_reasons,
-                                accepted=self.accepted,
-                                accept_idx=self.accept_idx,
-                            )
+                            self._accept_pending_list([p_fin])
                     else:
-                        for p_fin in fins:
-                            self.accept_idx = process_pending_to_acceptance(
-                                p_fin,
-                                cfg=cfg,
-                                root=self.root,
-                                out_root=self.out_root,
-                                lang=self.lang,
-                                rejects_path=self.rejects_path,
-                                reject_fields=self.reject_fields,
-                                reject_reasons=self.reject_reasons,
-                                accepted=self.accepted,
-                                accept_idx=self.accept_idx,
-                            )
+                        self._accept_pending_list(fins)
                     if pbar is not None:
                         pbar.update(len(chunk))
             finally:
@@ -149,44 +197,29 @@ class PreprocessFlushMixin:
                 dynamic_ncols=True,
                 mininterval=0.25,
             )
+        accepted_chunk: list[PendingClip] = []
         for p in iter_survivors:
             try:
                 p_fin = finalize_two_pass_denoise(p, cfg)
             except Exception as e:
                 self._two_pass_denoise_exception(p, e)
                 continue
-            self.accept_idx = process_pending_to_acceptance(
-                p_fin,
-                cfg=cfg,
-                root=self.root,
-                out_root=self.out_root,
-                lang=self.lang,
-                rejects_path=self.rejects_path,
-                reject_fields=self.reject_fields,
-                reject_reasons=self.reject_reasons,
-                accepted=self.accepted,
-                accept_idx=self.accept_idx,
-            )
+            accepted_chunk.append(p_fin)
+        if accepted_chunk:
+            self._accept_pending_list(accepted_chunk)
 
     def flush_finalize_survivors(self, survivors: list[PendingClip]) -> None:
-        if not survivors:
-            return
-        if self.cfg.asr_gate.enabled:
-            survivors = apply_asr_gate(
-                self.cfg,
-                survivors,
-                work_parent=self.out_root.resolve(),
-                rejects_path=self.rejects_path,
-                reject_fields=self.reject_fields,
-                reject_reasons=self.reject_reasons,
-            )
-            self.asr_batches_flushed += 1
         if not survivors:
             return
         if self.cfg.two_pass_denoise.enabled and self._enhance_phase_is_after_align_complete():
             self.deferred_enhance_queue.extend(survivors)
             return
-        self._enhance_survivors_and_accept(survivors, apply_release=True)
+        if self.cfg.two_pass_denoise.enabled:
+            self._enhance_survivors_and_accept(survivors, apply_release=True)
+        else:
+            self._accept_pending_list(survivors)
+        if self.cfg.asr_gate.enabled:
+            self.asr_batches_flushed += 1
 
     def flush_mfa(self) -> None:
         cfg = self.cfg
@@ -195,45 +228,28 @@ class PreprocessFlushMixin:
         mg = cfg.mfa_gate
         items = [(p.mfa_utt_id, p.y, p.sr, p.text_norm) for p in self.mfa_batch]
         results = run_mfa_align_batch(self.mg_for_mfa, items, work_parent=self.out_root.resolve())
-        survivors: list[PendingClip] = []
-        for p, res in zip(self.mfa_batch, results):
-            if not res.ok:
-                write_reject_row(
-                    self.rejects_path,
-                    {
-                        "source_path": p.row.path,
-                        "client_id": p.row.client_id,
-                        "reason": "mfa_align_failed",
-                        "sentence_excerpt": p.excerpt,
-                    },
-                    self.reject_fields,
-                )
-                self.reject_reasons["mfa_align_failed"] = self.reject_reasons.get("mfa_align_failed", 0) + 1
-                continue
-            if mg.compare_phones_to_g2p:
-                g2p_s = (p.phonemes or "").strip()
-                mfa_raw = (res.phone_string or "").strip()
-                mfa_s = map_mfa_space_separated_to_g2p_tokens(mfa_raw, self.mfa_g2p_token_map)
-                if not phoneme_sequences_accept(
-                    g2p_s,
-                    mfa_s,
-                    max_token_error_rate=mg.max_token_error_rate_vs_g2p,
-                ):
-                    write_reject_row(
-                        self.rejects_path,
-                        {
-                            "source_path": p.row.path,
-                            "client_id": p.row.client_id,
-                            "reason": "mfa_phoneme_mismatch",
-                            "sentence_excerpt": p.excerpt,
-                        },
-                        self.reject_fields,
-                    )
-                    self.reject_reasons["mfa_phoneme_mismatch"] = (
-                        self.reject_reasons.get("mfa_phoneme_mismatch", 0) + 1
-                    )
-                    continue
-            survivors.append(p)
+        batch = list(self.mfa_batch)
+
+        def post_mfa(p: PendingClip, res: Any) -> str | None:
+            if not mg.compare_phones_to_g2p:
+                return None
+            g2p_s = (p.phonemes or "").strip()
+            mfa_raw = (res.phone_string or "").strip()
+            mfa_s = map_mfa_space_separated_to_g2p_tokens(mfa_raw, self.mfa_g2p_token_map)
+            if not phoneme_sequences_accept(
+                g2p_s,
+                mfa_s,
+                max_token_error_rate=mg.max_token_error_rate_vs_g2p,
+            ):
+                return "mfa_phoneme_mismatch"
+            return None
+
+        survivors = self._survivors_after_align_batch(
+            batch,
+            results,
+            align_fail_reason="mfa_align_failed",
+            post_align_reject=post_mfa,
+        )
         self.flush_finalize_survivors(survivors)
         self.mfa_batch.clear()
         self.mfa_batches_flushed += 1
@@ -245,92 +261,33 @@ class PreprocessFlushMixin:
         ng = cfg.nfa_gate
         items = [(p.nfa_utt_id, p.y, p.sr, p.text_norm) for p in self.nfa_batch]
         results = run_nfa_align_batch(ng, items, work_parent=self.out_root.resolve())
-        survivors: list[PendingClip] = []
-        for p, res in zip(self.nfa_batch, results):
-            if not res.ok:
-                write_reject_row(
-                    self.rejects_path,
-                    {
-                        "source_path": p.row.path,
-                        "client_id": p.row.client_id,
-                        "reason": "nfa_align_failed",
-                        "sentence_excerpt": p.excerpt,
-                    },
-                    self.reject_fields,
-                )
-                self.reject_reasons["nfa_align_failed"] = self.reject_reasons.get("nfa_align_failed", 0) + 1
-                continue
+        batch = list(self.nfa_batch)
+
+        def post_nfa(p: PendingClip, res: Any) -> str | None:
             if ng.compare_pred_text_to_norm:
                 hyp = (res.pred_text or "").strip()
                 if not hyp:
-                    write_reject_row(
-                        self.rejects_path,
-                        {
-                            "source_path": p.row.path,
-                            "client_id": p.row.client_id,
-                            "reason": "nfa_pred_text_missing",
-                            "sentence_excerpt": p.excerpt,
-                        },
-                        self.reject_fields,
-                    )
-                    self.reject_reasons["nfa_pred_text_missing"] = (
-                        self.reject_reasons.get("nfa_pred_text_missing", 0) + 1
-                    )
-                    continue
+                    return "nfa_pred_text_missing"
                 ref_ph = (p.phonemes or "").strip()
                 if not ref_ph:
-                    write_reject_row(
-                        self.rejects_path,
-                        {
-                            "source_path": p.row.path,
-                            "client_id": p.row.client_id,
-                            "reason": "nfa_ref_phonemes_missing",
-                            "sentence_excerpt": p.excerpt,
-                        },
-                        self.reject_fields,
-                    )
-                    self.reject_reasons["nfa_ref_phonemes_missing"] = (
-                        self.reject_reasons.get("nfa_ref_phonemes_missing", 0) + 1
-                    )
-                    continue
+                    return "nfa_ref_phonemes_missing"
                 hyp_norm = normalize_for_tts(hyp)
                 try:
-                    pred_ph = g2p_phonemes(hyp_norm, kana=cfg.text.g2p_kana)
+                    pred_ph = g2p_phonemes_for_dataset(
+                        hyp_norm,
+                        kana=cfg.text.g2p_kana,
+                        word_separator=cfg.text.phoneme_word_separator,
+                    )
                 except Exception:
-                    write_reject_row(
-                        self.rejects_path,
-                        {
-                            "source_path": p.row.path,
-                            "client_id": p.row.client_id,
-                            "reason": "nfa_pred_phonemize_failed",
-                            "sentence_excerpt": p.excerpt,
-                        },
-                        self.reject_fields,
-                    )
-                    self.reject_reasons["nfa_pred_phonemize_failed"] = (
-                        self.reject_reasons.get("nfa_pred_phonemize_failed", 0) + 1
-                    )
-                    continue
+                    return "nfa_pred_phonemize_failed"
                 if not phoneme_sequences_accept(
                     ref_ph,
                     pred_ph,
                     max_token_error_rate=ng.max_pred_phoneme_error_rate_vs_norm,
                 ):
-                    write_reject_row(
-                        self.rejects_path,
-                        {
-                            "source_path": p.row.path,
-                            "client_id": p.row.client_id,
-                            "reason": "nfa_pred_phoneme_mismatch",
-                            "sentence_excerpt": p.excerpt,
-                        },
-                        self.reject_fields,
-                    )
-                    self.reject_reasons["nfa_pred_phoneme_mismatch"] = (
-                        self.reject_reasons.get("nfa_pred_phoneme_mismatch", 0) + 1
-                    )
-                    continue
-            elif ng.compare_tokens_to_g2p:
+                    return "nfa_pred_phoneme_mismatch"
+                return None
+            if ng.compare_tokens_to_g2p:
                 g2p_s = (p.phonemes or "").strip()
                 nfa_raw = (res.token_string or "").strip()
                 nfa_s = map_mfa_space_separated_to_g2p_tokens(nfa_raw, self.nfa_g2p_token_map)
@@ -339,21 +296,15 @@ class PreprocessFlushMixin:
                     nfa_s,
                     max_token_error_rate=ng.max_token_error_rate_vs_g2p,
                 ):
-                    write_reject_row(
-                        self.rejects_path,
-                        {
-                            "source_path": p.row.path,
-                            "client_id": p.row.client_id,
-                            "reason": "nfa_token_mismatch",
-                            "sentence_excerpt": p.excerpt,
-                        },
-                        self.reject_fields,
-                    )
-                    self.reject_reasons["nfa_token_mismatch"] = (
-                        self.reject_reasons.get("nfa_token_mismatch", 0) + 1
-                    )
-                    continue
-            survivors.append(p)
+                    return "nfa_token_mismatch"
+            return None
+
+        survivors = self._survivors_after_align_batch(
+            batch,
+            results,
+            align_fail_reason="nfa_align_failed",
+            post_align_reject=post_nfa,
+        )
         self.flush_finalize_survivors(survivors)
         self.nfa_batch.clear()
         self.nfa_batches_flushed += 1

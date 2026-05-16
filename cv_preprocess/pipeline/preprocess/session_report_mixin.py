@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cv_preprocess.pipeline.preprocess.helpers import infer_release
+from cv_preprocess.pipeline.preprocess.helpers import effective_final_quality_gate, infer_release
 from cv_preprocess.pipeline.preprocess_efficiency import (
     effective_audio_catalog_for_preprocess,
     two_pass_uses_split_pipelines,
@@ -117,6 +117,11 @@ class PreprocessReportMixin:
                         cfg.nfa_gate.prefilter.quality_gate_overrides.keys()
                     ),
                 },
+                "quality_gate_profile": cfg.nfa_gate.quality_gate_profile,
+                "quality_gate_override_keys": sorted(cfg.nfa_gate.quality_gate_overrides.keys()),
+                "final_quality_gate_min_estimated_snr_db": effective_final_quality_gate(cfg).min_estimated_snr_db
+                if cfg.nfa_gate.enabled
+                else None,
                 "align_using_pred_text": cfg.nfa_gate.align_using_pred_text,
                 "compare_pred_text_to_norm": cfg.nfa_gate.compare_pred_text_to_norm,
                 "max_pred_phoneme_error_rate_vs_norm": cfg.nfa_gate.max_pred_phoneme_error_rate_vs_norm,

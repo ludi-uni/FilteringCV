@@ -110,9 +110,10 @@ def prepare_clip_rows(
     apply_input_max_clips: bool = False,
     max_clips_head: int | None = None,
 ) -> tuple[list[ClipRow], int, int, int]:
-    """話者・メタフィルタ →（任意で path ソート・件数上限）→（任意で話者マージ）。
+    """話者・メタフィルタ →（任意で path ソート）→（任意で全体件数上限）→（任意で話者マージ）。
 
     戻り値: ``(prepared_rows, rows_after_speaker_filter, rows_after_metadata_filter, rows_after_max_clips_cap)``。
+    ``rows_after_max_clips_cap`` は ``max_clips_head`` / ``input.max_clips`` 適用後の件数。
     ``filter_by_speakers`` / ``filter_by_clip_metadata`` は新しいリストを返すため、
     入力 ``rows`` の ``client_id`` は話者マージを有効にしない限り変わらない。
     """
@@ -147,7 +148,7 @@ def load_clip_rows_for_pipeline(
     apply_speaker_merge: bool = True,
     sort_by_path: bool = True,
 ) -> ClipRowsPipelineLoad:
-    """話者・メタフィルタ → path ソート →（任意で件数上限）→話者マージ、までを共通化する。
+    """話者・メタフィルタ → path ソート →（任意で全体件数上限）→話者マージ、までを共通化する。
 
     * **apply_input_max_clips** が真のとき ``cfg.input.max_clips`` を適用し、
       件数が上限を超える場合のみ先頭に切り詰める（preprocess と同じ）。

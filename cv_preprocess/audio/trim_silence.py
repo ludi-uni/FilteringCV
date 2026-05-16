@@ -69,6 +69,7 @@ def trim_silence(
     hop_length: int = 512,
     trim_sides: TrimSides = "both",
     max_trailing_spike_frames: int = 0,
+    track_metadata: dict[str, bool] | None = None,
 ) -> np.ndarray:
     """``librosa.effects.trim`` 相当。``trim_sides`` で先頭・末尾のどちらを削るか選べる。
 
@@ -126,8 +127,12 @@ def trim_silence(
         if peak_in > 1e-6 and peak_out < 1e-12:
             y_t = y_work
 
+    exceeded_max_keep = False
     if max_keep_sec is not None:
         max_n = int(sr * max_keep_sec)
         if y_t.size > max_n:
+            exceeded_max_keep = True
             y_t = y_t[:max_n]
+    if track_metadata is not None:
+        track_metadata["exceeded_max_keep_sec"] = exceeded_max_keep
     return y_t.astype(np.float32)

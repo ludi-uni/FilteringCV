@@ -11,16 +11,16 @@ from cv_preprocess.audio.quality_gate import run_early_audio_gate, run_quality_g
 from cv_preprocess.audio.resample import resample_audio
 from cv_preprocess.io.tsv_loader import ClipRow, iter_clip_audio_paths
 from cv_preprocess.pipeline.export import write_reject_row
+from cv_preprocess.pipeline.g2p_map_suggest_core import validate_clip_text_norm
+from cv_preprocess.pipeline.preprocess.clip_accept import speaker_already_at_max_accepts
 from cv_preprocess.pipeline.preprocess.helpers import (
     _compute_clip_mora_count_once,
     _maybe_prefilter_final_gate_reuse_pair,
     _mora_gates_needed,
 )
 from cv_preprocess.pipeline.preprocess.types import PendingClip
-from cv_preprocess.text.language_detect import passes_japanese_policy, passes_locale_expected
-from cv_preprocess.text.normalize import normalize_for_tts
 from cv_preprocess.text.phoneme_compare import phoneme_sequences_accept
-from cv_preprocess.text.phonemize import g2p_phonemes
+from cv_preprocess.text.phonemize import g2p_phonemes_for_dataset
 
 
 class PreprocessRowMixin:
@@ -28,56 +28,44 @@ class PreprocessRowMixin:
 
     def _preprocess_one_row(self, row: ClipRow) -> None:
         excerpt = row.sentence[:80] if row.sentence else ""
+        if speaker_already_at_max_accepts(self.cfg, self.accepted_count_by_speaker, row):
+            write_reject_row(
+                self.rejects_path,
+                {
+                    "source_path": row.path,
+                    "client_id": row.client_id,
+                    "reason": "max_clips_per_speaker",
+                    "sentence_excerpt": excerpt,
+                },
+                self.reject_fields,
+            )
+            self.reject_reasons["max_clips_per_speaker"] = self.reject_reasons.get("max_clips_per_speaker", 0) + 1
+            return
+
         text_raw = row.sentence
-        text_norm = normalize_for_tts(text_raw)
-
-        if not passes_locale_expected(row.locale, self.cfg.input.locale_expected):
+        text_norm, text_rej = validate_clip_text_norm(row, self.cfg)
+        if text_rej is not None:
             write_reject_row(
                 self.rejects_path,
                 {
                     "source_path": row.path,
                     "client_id": row.client_id,
-                    "reason": "text_locale",
+                    "reason": text_rej,
                     "sentence_excerpt": excerpt,
                 },
                 self.reject_fields,
             )
-            self.reject_reasons["text_locale"] = self.reject_reasons.get("text_locale", 0) + 1
-            return
-
-        if not passes_japanese_policy(text_norm, self.cfg.text.require_japanese):
-            write_reject_row(
-                self.rejects_path,
-                {
-                    "source_path": row.path,
-                    "client_id": row.client_id,
-                    "reason": "text_not_japanese",
-                    "sentence_excerpt": excerpt,
-                },
-                self.reject_fields,
-            )
-            self.reject_reasons["text_not_japanese"] = self.reject_reasons.get("text_not_japanese", 0) + 1
-            return
-
-        tl = len(text_norm)
-        if tl < self.cfg.text.min_text_len or tl > self.cfg.text.max_text_len:
-            write_reject_row(
-                self.rejects_path,
-                {
-                    "source_path": row.path,
-                    "client_id": row.client_id,
-                    "reason": "text_length",
-                    "sentence_excerpt": excerpt,
-                },
-                self.reject_fields,
-            )
-            self.reject_reasons["text_length"] = self.reject_reasons.get("text_length", 0) + 1
+            self.reject_reasons[text_rej] = self.reject_reasons.get(text_rej, 0) + 1
             return
 
         phonemes: str | None = None
         if self.cfg.text.phonemize:
             try:
-                phonemes = g2p_phonemes(text_norm, kana=self.cfg.text.g2p_kana)
+                phonemes = g2p_phonemes_for_dataset(
+                    text_norm,
+                    kana=self.cfg.text.g2p_kana,
+                    word_separator=self.cfg.text.phoneme_word_separator,
+                )
             except Exception:
                 write_reject_row(
                     self.rejects_path,
@@ -110,25 +98,25 @@ class PreprocessRowMixin:
                         self.reject_reasons.get("phoneme_alignment_missing_manifest", 0) + 1
                     )
                     return
-                elif not phoneme_sequences_accept(
-                    phonemes,
-                    aligned_ph,
-                    max_token_error_rate=self.pac.max_token_error_rate,
-                ):
-                    write_reject_row(
-                        self.rejects_path,
-                        {
-                            "source_path": row.path,
-                            "client_id": row.client_id,
-                            "reason": "phoneme_alignment_mismatch",
-                            "sentence_excerpt": excerpt,
-                        },
-                        self.reject_fields,
-                    )
-                    self.reject_reasons["phoneme_alignment_mismatch"] = (
-                        self.reject_reasons.get("phoneme_alignment_mismatch", 0) + 1
-                    )
-                    return
+            elif not phoneme_sequences_accept(
+                phonemes,
+                aligned_ph,
+                max_token_error_rate=self.pac.max_token_error_rate,
+            ):
+                write_reject_row(
+                    self.rejects_path,
+                    {
+                        "source_path": row.path,
+                        "client_id": row.client_id,
+                        "reason": "phoneme_alignment_mismatch",
+                        "sentence_excerpt": excerpt,
+                    },
+                    self.reject_fields,
+                )
+                self.reject_reasons["phoneme_alignment_mismatch"] = (
+                    self.reject_reasons.get("phoneme_alignment_mismatch", 0) + 1
+                )
+                return
 
         mora_early, mora_pref, mora_fin = _mora_gates_needed(self.lang, self.cfg, self.align_prefilter_qg)
         clip_mora_count, mora_reject_reason = _compute_clip_mora_count_once(
@@ -260,6 +248,22 @@ class PreprocessRowMixin:
                 self.reject_fields,
             )
             self.reject_reasons["audio_pipeline_failed"] = self.reject_reasons.get("audio_pipeline_failed", 0) + 1
+            return
+
+        if ameta.get("trim_exceeds_max_keep_sec"):
+            write_reject_row(
+                self.rejects_path,
+                {
+                    "source_path": row.path,
+                    "client_id": row.client_id,
+                    "reason": "trim_exceeds_max_keep_sec",
+                    "sentence_excerpt": excerpt,
+                },
+                self.reject_fields,
+            )
+            self.reject_reasons["trim_exceeds_max_keep_sec"] = (
+                self.reject_reasons.get("trim_exceeds_max_keep_sec", 0) + 1
+            )
             return
 
         if self.cfg.mfa_gate.enabled and self.mfa_prefilter_qg is not None:

@@ -19,11 +19,15 @@ class AsrGateConfig(BaseModel):
     sample_rate_hz: int = 16000
 
     min_asr_confidence: float | None = None
-    max_char_error_rate: float = 0.20
-    max_phoneme_error_rate: float = 0.25
+    max_char_error_rate: float = 0.12
+    max_phoneme_error_rate: float = 0.10
 
     compare_text: bool = True
     compare_phonemes: bool = True
+    #: 通過後に ``phonemes`` を仮説文の G2P で上書き（音声整合優先）。
+    use_hypothesis_phonemes: bool = True
+    #: ``use_hypothesis_phonemes`` 時、``text_norm`` も正規化済み仮説で上書きする。
+    sync_text_norm_to_hypothesis: bool = True
 
     normalize_reference_text: bool = True
     normalize_hypothesis_text: bool = True
@@ -127,6 +131,19 @@ class AsrGateConfig(BaseModel):
             return self
         if not self.compare_text and not self.compare_phonemes:
             raise ValueError("asr_gate.compare_text と compare_phonemes のどちらか一方は true にしてください")
+        return self
+
+    @model_validator(mode="after")
+    def min_confidence_requires_mock(self) -> AsrGateConfig:
+        if (
+            self.enabled
+            and self.backend == "nemo_transcribe"
+            and self.min_asr_confidence is not None
+        ):
+            raise ValueError(
+                "asr_gate.min_asr_confidence は backend=nemo_transcribe では未対応です "
+                "(NeMo ワーカーは信頼度を返しません)。null にするか backend=mock を使ってください。"
+            )
         return self
 
 

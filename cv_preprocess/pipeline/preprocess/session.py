@@ -110,6 +110,7 @@ class PreprocessSession(PreprocessRowMixin, PreprocessFlushMixin, PreprocessRepo
         self.mfa_nj_resolved, self.mfa_bs_resolved = resolve_mfa_parallelism(cfg.mfa_gate)
 
         self.accept_idx = 0
+        self.accepted_count_by_speaker: dict[str, int] = {}
         self.audio_pipeline_error_logged = False
         self.mfa_batch: list[PendingClip] = []
         self.mfa_utt_counter = 0

@@ -8,6 +8,7 @@ from cv_preprocess.pipeline.preprocess.helpers import (
     _merged_quality_gate_for_nfa_prefilter,
     _maybe_prefilter_final_gate_reuse_pair,
     _mora_gates_needed,
+    effective_final_quality_gate,
 )
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "_merged_quality_gate_for_nfa_prefilter",
     "_maybe_prefilter_final_gate_reuse_pair",
     "_mora_gates_needed",
+    "effective_final_quality_gate",
 ]
 
 

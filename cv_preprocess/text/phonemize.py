@@ -40,3 +40,23 @@ def g2p_phonemes(text: str, *, kana: bool = False) -> str:
         with _stderr_fd_to_devnull():
             return pyopenjtalk.g2p(text, kana=kana)
     return pyopenjtalk.g2p(text, kana=kana)
+
+
+def g2p_phonemes_for_dataset(
+    text: str,
+    *,
+    kana: bool = False,
+    word_separator: str | None = None,
+) -> str:
+    """学習用音素列。``text`` の空白区切り語ごとに G2P し、``word_separator`` で結合する（仕様 §13 の ``|`` 相当）。"""
+    if kana or not word_separator:
+        return g2p_phonemes(text, kana=kana)
+    parts = [p for p in text.split() if p.strip()]
+    if len(parts) <= 1:
+        return g2p_phonemes(text, kana=kana)
+    segs = [g2p_phonemes(p, kana=kana).strip() for p in parts]
+    segs = [s for s in segs if s]
+    if not segs:
+        return g2p_phonemes(text, kana=kana)
+    sep = f" {word_separator.strip()} "
+    return sep.join(segs)

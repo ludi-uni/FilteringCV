@@ -113,6 +113,8 @@ _DEFAULT_MERGED_SPEAKER_CLIENT_ID = "__cv_merged_speaker__"
 class SpeakersConfig(BaseModel):
     include_client_ids: list[str] = Field(default_factory=list)
     clip_metadata_filters: ClipMetadataFilters = Field(default_factory=ClipMetadataFilters)
+    #: 各 ``client_id`` あたり **採用（manifest 追記）** するクリップの上限。最終品質ゲート等を通過したあとに数え、超えた分は ``rejects`` に ``max_clips_per_speaker`` で記録する。上限に達した話者の残り行は **テキスト検証より前に短絡拒否** して音声処理を省略する。同一バッチ内では ``source_path`` 昇順で採用枠を埋める。
+    max_clips_per_speaker: int | None = None
     #: ``include_client_ids`` / ``clip_metadata_filters`` 適用後に残った全行の ``client_id`` を同一の合成 ID に置き換える（多話者を単一話者として出力・分割する）。
     merge_filtered_speakers_as_one: bool = False
     #: 上記が true のときの ``client_id``。未設定または空なら ``__cv_merged_speaker__``。
@@ -136,6 +138,31 @@ class SpeakersConfig(BaseModel):
             return None
         s = str(v).strip()
         return s if s else None
+
+    @field_validator("max_clips_per_speaker", mode="before")
+    @classmethod
+    def coerce_max_clips_per_speaker(cls, v: object) -> object:
+        if v is None or v == "":
+            return None
+        if isinstance(v, bool):
+            raise ValueError("speakers.max_clips_per_speaker must be an integer or null, not boolean")
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            return int(s, 10)
+        return v
+
+    @field_validator("max_clips_per_speaker")
+    @classmethod
+    def max_clips_per_speaker_positive(cls, v: int | None) -> int | None:
+        if v is None:
+            return v
+        if int(v) < 1:
+            raise ValueError("speakers.max_clips_per_speaker must be >= 1 when set")
+        return int(v)
 
     def resolved_merged_speaker_client_id(self) -> str:
         if self.merged_speaker_client_id:

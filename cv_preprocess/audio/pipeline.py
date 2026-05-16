@@ -219,6 +219,7 @@ def run_steps_on_array(
                 y = normalize_peak(y, peak_dbfs=step.peak_dbfs)
             meta["steps_trace"].append({"type": "normalize", "method": step.method})
         elif isinstance(step, TrimSilenceStep):
+            trim_track: dict[str, bool] = {}
             y = trim_silence(
                 y,
                 sr,
@@ -228,7 +229,10 @@ def run_steps_on_array(
                 hop_length=step.trim_hop_length,
                 trim_sides=step.trim_sides,
                 max_trailing_spike_frames=step.max_trailing_spike_frames,
+                track_metadata=trim_track,
             )
+            if trim_track.get("exceeded_max_keep_sec") and step.reject_if_truncated:
+                meta["trim_exceeds_max_keep_sec"] = True
             ph = int(round(float(step.pad_head_ms) * float(sr) / 1000.0))
             pt = int(round(float(step.pad_tail_ms) * float(sr) / 1000.0))
             if ph > 0 or pt > 0:
@@ -240,6 +244,7 @@ def run_steps_on_array(
                     "max_trailing_spike_frames": step.max_trailing_spike_frames,
                     "pad_head_ms": step.pad_head_ms,
                     "pad_tail_ms": step.pad_tail_ms,
+                    "exceeded_max_keep_sec": bool(trim_track.get("exceeded_max_keep_sec")),
                 }
             )
         elif isinstance(step, LowpassStep):

@@ -160,6 +160,8 @@ class TrimSilenceStep(BaseModel):
     pad_head_ms: float = 0.0
     #: trim 後に末尾へ付与する無音（ミリ秒）。
     pad_tail_ms: float = 0.0
+    #: ``max_keep_sec`` 適用で波形を切り詰める場合、パイプライン側で ``trim_exceeds_max_keep_sec`` として拒否可能にする。
+    reject_if_truncated: bool = True
 
     @field_validator("max_trailing_spike_frames")
     @classmethod

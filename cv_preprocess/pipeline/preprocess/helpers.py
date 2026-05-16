@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -33,6 +34,36 @@ def _merged_quality_gate_for_nfa_prefilter(cfg: PipelineConfig) -> QualityGateCo
     )
 
 
+def _resolve_quality_gate_profile_dict(
+    cfg: PipelineConfig, profile_name: str, *, context: str
+) -> dict[str, Any]:
+    profiles = cfg.quality_gate_profiles or {}
+    if profile_name not in profiles:
+        raise ValueError(
+            f"{context} {profile_name!r} not found in quality_gate_profiles "
+            f"(keys: {list(profiles)})"
+        )
+    base_prof = profiles[profile_name]
+    if not isinstance(base_prof, dict):
+        raise ValueError(f"quality_gate_profiles[{profile_name!r}] must be a mapping")
+    return dict(base_prof)
+
+
+def effective_final_quality_gate(cfg: PipelineConfig) -> QualityGateConfig:
+    """accept 直前の ``run_quality_gate`` に使う閾値。``nfa_gate.enabled`` 時は ``nfa_gate.quality_gate_*`` をマージ。"""
+    if not cfg.nfa_gate.enabled:
+        return cfg.quality_gate
+    ng = cfg.nfa_gate
+    if not ng.quality_gate_overrides and not ng.quality_gate_profile:
+        return cfg.quality_gate
+    d = cfg.quality_gate.model_dump()
+    prof = ng.quality_gate_profile
+    if prof:
+        d = {**_resolve_quality_gate_profile_dict(cfg, prof, context="nfa_gate.quality_gate_profile"), **d}
+    d.update(ng.quality_gate_overrides)
+    return QualityGateConfig.model_validate(d)
+
+
 def _mora_gates_needed(
     lang: str,
     cfg: PipelineConfig,
@@ -50,7 +81,8 @@ def _mora_gates_needed(
         and cfg.quality_gate.min_sec_per_mora is not None
     )
     pref = ja and align_prefilter_qg is not None and align_prefilter_qg.min_sec_per_mora is not None
-    final = ja and cfg.quality_gate.min_sec_per_mora is not None
+    final_qg = effective_final_quality_gate(cfg)
+    final = ja and final_qg.min_sec_per_mora is not None
     return early, pref, final
 
 
@@ -104,13 +136,14 @@ def _maybe_prefilter_final_gate_reuse_pair(
     mora_n_final = clip_mora_count if mora_fin else None
     if mora_pf != mora_n_final:
         return None
-    if not quality_gate_configs_equivalent(prefilter_qg, cfg.quality_gate):
+    final_qg = effective_final_quality_gate(cfg)
+    if not quality_gate_configs_equivalent(prefilter_qg, final_qg):
         return None
     fp = quality_gate_run_fingerprint(
         y,
         sr,
         text_len,
-        gate=prefilter_qg,
+        gate=final_qg,
         snr_cfg=cfg.snr,
         mora_count=mora_pf,
     )

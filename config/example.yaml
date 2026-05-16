@@ -25,6 +25,8 @@ speakers:
   # merged_speaker_client_id: merged_speaker
   # 1 人だけのときはスカラーでもリストでも可（実装が正規化します）。全話者は []
   include_client_ids: []
+  # 各 client_id あたり「採用」上限（null / 省略で無制限）。採用数は最終品質ゲート通過後に数え、超過は rejects に max_clips_per_speaker。上限到達後の当該話者の行はテキスト処理前に短絡し、同一バッチ採用時は source_path 昇順で枠を埋める。
+  # max_clips_per_speaker: 500
   # 任意: gender / age / accents / variant / locale / segment の許容リスト（空の軸は無効）。docs/仕様.md 2.4 節
   # リストに明示的に "" を含めると、その軸で TSV 空セルの行も許容する。含めないときは空欄行は除外（従来どおり）。
   # up_votes / down_votes は閾値（null または省略で無効）。行の up_votes が設定値以上、down_votes が設定値以下の行だけ残す。
@@ -52,9 +54,12 @@ audio_pipeline_align:
     # head_tail_db が小さいほど先頭末尾の無音を厳しく落とす。学習で語頭語尾が詰まりすぎる場合は 34〜42 程度へ。
     - type: trim_silence
       max_keep_sec: 30.0
-      head_tail_db: 36
+      head_tail_db: 40
       trim_frame_length: 1024
       trim_hop_length: 256
+      pad_head_ms: 40
+      pad_tail_ms: 20
+      reject_if_truncated: true
 
 audio_pipeline_enhance:
   target_sample_rate: 24000
@@ -129,6 +134,7 @@ text:
   require_japanese: true
   phonemize: true
   g2p_kana: false
+  phoneme_word_separator: "|"
   # 任意: 別途用意したアライメント音素 JSONL と G2P を照合（docs/仕様.md §8.1）
   # マニフェストの作り方は docs/音素照合マニフェスト.md。有効化前にファイル必須（無いと preprocess が起動時に失敗）
   phoneme_alignment_check:
@@ -188,14 +194,14 @@ nfa_gate:
   quality_gate_profile: null
 
 asr_gate:
-  enabled: true
+  enabled: false
   backend: parakeet
   # model_name は Hugging Face の repo_id（誤り例: parakeet-tdt-0.6b-v3-ja → 存在せず 401）。
   # 日本語 CTC: nvidia/parakeet-tdt_ctc-0.6b-ja（NFA 既定と同系）。多言語 TDT: nvidia/parakeet-tdt-0.6b-v3（-ja なし）。
   model_name: nvidia/parakeet-tdt_ctc-0.6b-ja
   sample_rate_hz: 16000
 
-  min_asr_confidence: 0.70
+  min_asr_confidence: null
   max_char_error_rate: 0.20
   max_phoneme_error_rate: 0.25
 

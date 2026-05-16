@@ -98,6 +98,28 @@ def test_asr_disabled_allows_invalid_nemo_combo(tmp_path: Path) -> None:
     assert cfg.asr_gate.enabled is False
 
 
+def test_asr_min_confidence_with_nemo_rejected(tmp_path: Path) -> None:
+    (tmp_path / "ja").mkdir()
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        yaml.dump(
+            {
+                **_minimal_input(tmp_path),
+                "text": {"phonemize": True},
+                "asr_gate": {
+                    "enabled": True,
+                    "backend": "nemo_transcribe",
+                    "pretrained_name": "nvidia/parakeet-tdt_ctc-0.6b-ja",
+                    "min_asr_confidence": 0.7,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="min_asr_confidence"):
+        PipelineConfig.from_yaml(p)
+
+
 def test_asr_yaml_aliases_parakeet_and_model_name(tmp_path: Path) -> None:
     (tmp_path / "ja").mkdir()
     p = tmp_path / "c.yaml"

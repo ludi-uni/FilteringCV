@@ -10,6 +10,8 @@ class TextConfig(BaseModel):
     require_japanese: bool = True
     phonemize: bool = True
     g2p_kana: bool = False
+    #: ``text_norm`` の空白区切り語境界を音素列に反映（例: ``|``）。``null`` で従来どおり一括 G2P。
+    phoneme_word_separator: str | None = "|"
     phoneme_alignment_check: PhonemeAlignmentCheckConfig = Field(default_factory=PhonemeAlignmentCheckConfig)
 
     @model_validator(mode="after")

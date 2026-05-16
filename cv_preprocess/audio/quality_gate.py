@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import struct
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -31,6 +32,24 @@ def quality_gate_configs_equivalent(a: QualityGateConfig, b: QualityGateConfig) 
     return a.model_dump(mode="json") == b.model_dump(mode="json")
 
 
+_FP_AUDIO_SAMPLE_CAP = 8192
+
+
+def _sampled_waveform_bytes_for_fingerprint(y: np.ndarray) -> bytes:
+    """全サンプル ``tobytes`` の代わりに長さ＋等間隔サンプル列（長尺波形での fingerprint コスト削減）。"""
+    y_a = np.asarray(y, dtype=np.float32).ravel(order="C")
+    n = int(y_a.size)
+    head = struct.pack("<q", n)
+    if n == 0:
+        return head
+    if n <= _FP_AUDIO_SAMPLE_CAP:
+        idx = np.arange(n, dtype=np.int64)
+    else:
+        idx = np.linspace(0, n - 1, num=_FP_AUDIO_SAMPLE_CAP, dtype=np.float64).astype(np.int64)
+    idx_u = np.unique(idx)
+    return head + y_a[idx_u].tobytes()
+
+
 def quality_gate_run_fingerprint(
     y: np.ndarray,
     sr: int,
@@ -44,9 +63,8 @@ def quality_gate_run_fingerprint(
     同一波形・同一ゲート・同一 SNR 設定・同一テキスト長・同一モーラ数での ``run_quality_gate`` 短絡用キー。
     ``two_pass_denoise`` 後など波形が変わった場合は別フィンガープリントになる。
     """
-    y_a = np.asarray(y, dtype=np.float32).ravel(order="C")
     h = hashlib.sha256()
-    h.update(y_a.tobytes())
+    h.update(_sampled_waveform_bytes_for_fingerprint(y))
     h.update(int(sr).to_bytes(4, "little", signed=True))
     h.update(int(text_len).to_bytes(4, "little", signed=False))
     if mora_count is None:
@@ -217,6 +235,57 @@ def _silence_ratio_and_trailing_sec(
     return sil, trail
 
 
+@dataclass
+class WaveformGateMetrics:
+    """``run_early_audio_gate`` / ``run_quality_gate`` で共有する波形スカラー指標。"""
+
+    duration_sec: float
+    silence_ratio: float
+    trailing_silence_sec: float
+    clipping_ratio: float
+    dc_offset: float
+    snr_val: float | None
+
+
+def compute_waveform_gate_metrics(
+    y: np.ndarray,
+    sr: int,
+    *,
+    silence_rms_floor: float,
+    silence_ref_percentile: float,
+    snr_cfg: SnrEstimatorConfig,
+) -> WaveformGateMetrics:
+    y_m = _as_mono_1d(y)
+    duration_sec = float(y_m.size) / float(sr) if sr > 0 else 0.0
+    silence_ratio, trailing_silence_sec = _silence_ratio_and_trailing_sec(
+        y_m,
+        sr,
+        frame_ms=snr_cfg.frame_ms,
+        hop_ms=snr_cfg.hop_ms,
+        rms_floor=silence_rms_floor,
+        ref_percentile=silence_ref_percentile,
+    )
+    clipping_ratio = float(np.mean(np.abs(y_m) >= 0.999))
+    dc_offset = float(abs(float(np.mean(y_m))))
+    snr_val = estimate_snr_db(
+        y_m,
+        sr,
+        frame_ms=snr_cfg.frame_ms,
+        hop_ms=snr_cfg.hop_ms,
+        noise_percentile=snr_cfg.noise_percentile,
+        signal_percentile=snr_cfg.signal_percentile,
+        min_frames=snr_cfg.min_frames,
+    )
+    return WaveformGateMetrics(
+        duration_sec=duration_sec,
+        silence_ratio=silence_ratio,
+        trailing_silence_sec=trailing_silence_sec,
+        clipping_ratio=clipping_ratio,
+        dc_offset=dc_offset,
+        snr_val=snr_val,
+    )
+
+
 def measure_trailing_silence_sec(
     y: np.ndarray,
     sr: int,
@@ -285,59 +354,45 @@ def run_early_audio_gate(
     early: EarlyAudioGateConfig,
 ) -> GateResult:
     """``main_gate`` / ``snr_cfg`` の閾値で、有効化した指標だけを検査する（ティア付与は行わない）。"""
-    y = _as_mono_1d(y)
-    duration_sec = float(y.size) / float(sr) if sr > 0 else 0.0
-    silence_ratio, trailing_silence_sec = _silence_ratio_and_trailing_sec(
+    m = compute_waveform_gate_metrics(
         y,
         sr,
-        frame_ms=snr_cfg.frame_ms,
-        hop_ms=snr_cfg.hop_ms,
-        rms_floor=main_gate.silence_ratio_rms_floor,
-        ref_percentile=main_gate.silence_ratio_ref_percentile,
-    )
-    clipping_ratio = float(np.mean(np.abs(y) >= 0.999))
-    dc_offset = float(abs(float(np.mean(y))))
-    snr_val = estimate_snr_db(
-        y,
-        sr,
-        frame_ms=snr_cfg.frame_ms,
-        hop_ms=snr_cfg.hop_ms,
-        noise_percentile=snr_cfg.noise_percentile,
-        signal_percentile=snr_cfg.signal_percentile,
-        min_frames=snr_cfg.min_frames,
+        silence_rms_floor=main_gate.silence_ratio_rms_floor,
+        silence_ref_percentile=main_gate.silence_ratio_ref_percentile,
+        snr_cfg=snr_cfg,
     )
 
     def fail(reason: str) -> GateResult:
         return GateResult(
             False,
             reason,
-            duration_sec,
-            silence_ratio,
-            snr_val,
-            clipping_ratio,
-            dc_offset,
-            trailing_silence_sec=trailing_silence_sec,
+            m.duration_sec,
+            m.silence_ratio,
+            m.snr_val,
+            m.clipping_ratio,
+            m.dc_offset,
+            trailing_silence_sec=m.trailing_silence_sec,
             mora_count=mora_count,
         )
 
     if early.check_duration:
-        if duration_sec < main_gate.min_duration_sec or duration_sec > main_gate.max_duration_sec:
+        if m.duration_sec < main_gate.min_duration_sec or m.duration_sec > main_gate.max_duration_sec:
             return fail("early_gate_duration")
     if early.check_silence_ratio:
-        if silence_ratio > main_gate.max_silence_ratio:
+        if m.silence_ratio > main_gate.max_silence_ratio:
             return fail("early_gate_silence")
     if early.check_snr and main_gate.min_estimated_snr_db is not None:
         # 推定不能（短尺・エネルギー分布が平坦等）は閾値比較しない（quality_gate のコメントと同趣旨）
-        if snr_val is not None and snr_val < main_gate.min_estimated_snr_db:
+        if m.snr_val is not None and m.snr_val < main_gate.min_estimated_snr_db:
             return fail("early_gate_snr")
     if early.check_clipping:
-        if clipping_ratio > main_gate.max_clipping_ratio:
+        if m.clipping_ratio > main_gate.max_clipping_ratio:
             return fail("early_gate_clipping")
     if early.check_dc_offset:
-        if dc_offset > main_gate.max_abs_dc_offset:
+        if m.dc_offset > main_gate.max_abs_dc_offset:
             return fail("early_gate_dc")
     if early.check_chars_per_sec:
-        cps = text_len / duration_sec if duration_sec > 0 else 0.0
+        cps = text_len / m.duration_sec if m.duration_sec > 0 else 0.0
         if main_gate.min_chars_per_sec is not None and cps < main_gate.min_chars_per_sec:
             return fail("early_gate_text_audio_low")
         if main_gate.max_chars_per_sec is not None and cps > main_gate.max_chars_per_sec:
@@ -350,18 +405,18 @@ def run_early_audio_gate(
             and mora_count > 0
         ):
             min_req_out = mora_count * float(main_gate.min_sec_per_mora) * float(main_gate.mora_gate_relax)
-            if duration_sec + 1e-9 < min_req_out:
+            if m.duration_sec + 1e-9 < min_req_out:
                 return fail("early_gate_text_audio_mora")
 
     return GateResult(
         True,
         None,
-        duration_sec,
-        silence_ratio,
-        snr_val,
-        clipping_ratio,
-        dc_offset,
-        trailing_silence_sec=trailing_silence_sec,
+        m.duration_sec,
+        m.silence_ratio,
+        m.snr_val,
+        m.clipping_ratio,
+        m.dc_offset,
+        trailing_silence_sec=m.trailing_silence_sec,
         mora_count=mora_count,
         min_required_duration_sec=min_req_out,
     )
@@ -376,28 +431,19 @@ def run_quality_gate(
     snr_cfg: SnrEstimatorConfig,
     mora_count: int | None = None,
 ) -> GateResult:
-    y = _as_mono_1d(y)
-    duration_sec = float(y.size) / float(sr) if sr > 0 else 0.0
-    silence_ratio, trailing_silence_sec = _silence_ratio_and_trailing_sec(
+    m = compute_waveform_gate_metrics(
         y,
         sr,
-        frame_ms=snr_cfg.frame_ms,
-        hop_ms=snr_cfg.hop_ms,
-        rms_floor=gate.silence_ratio_rms_floor,
-        ref_percentile=gate.silence_ratio_ref_percentile,
+        silence_rms_floor=gate.silence_ratio_rms_floor,
+        silence_ref_percentile=gate.silence_ratio_ref_percentile,
+        snr_cfg=snr_cfg,
     )
-    clipping_ratio = float(np.mean(np.abs(y) >= 0.999))
-    dc_offset = float(abs(float(np.mean(y))))
-
-    snr_val = estimate_snr_db(
-        y,
-        sr,
-        frame_ms=snr_cfg.frame_ms,
-        hop_ms=snr_cfg.hop_ms,
-        noise_percentile=snr_cfg.noise_percentile,
-        signal_percentile=snr_cfg.signal_percentile,
-        min_frames=snr_cfg.min_frames,
-    )
+    duration_sec = m.duration_sec
+    silence_ratio = m.silence_ratio
+    trailing_silence_sec = m.trailing_silence_sec
+    clipping_ratio = m.clipping_ratio
+    dc_offset = m.dc_offset
+    snr_val = m.snr_val
 
     if duration_sec < gate.min_duration_sec or duration_sec > gate.max_duration_sec:
         return GateResult(

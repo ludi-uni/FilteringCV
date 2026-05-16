@@ -70,6 +70,28 @@ def test_apply_asr_gate_mock_echo_accepts(tmp_path: Path) -> None:
     assert out[0].asr_hypothesis is not None
 
 
+def test_apply_asr_gate_updates_phonemes_from_hypothesis(tmp_path: Path) -> None:
+    cfg = _cfg(
+        tmp_path,
+        use_hypothesis_phonemes=True,
+        sync_text_norm_to_hypothesis=True,
+        mock_mode="echo",
+    )
+    p = _pending("あ")
+    p.phonemes = "stale"
+    out = apply_asr_gate(
+        cfg,
+        [p],
+        work_parent=tmp_path,
+        rejects_path=tmp_path / "rej.csv",
+        reject_fields=["source_path", "client_id", "reason", "sentence_excerpt"],
+        reject_reasons={},
+    )
+    assert len(out) == 1
+    assert out[0].phonemes == "a"
+    assert out[0].text_norm == "あ"
+
+
 def test_apply_asr_gate_mock_mismatch_rejects_text(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path, mock_mode="mismatch_char")
     p = _pending("あ")

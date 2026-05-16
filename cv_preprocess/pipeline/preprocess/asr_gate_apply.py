@@ -16,7 +16,7 @@ from cv_preprocess.pipeline.export import write_reject_row
 from cv_preprocess.pipeline.preprocess.types import PendingClip
 from cv_preprocess.text.normalize import normalize_for_tts
 from cv_preprocess.text.phoneme_compare import char_error_rate, token_error_rate
-from cv_preprocess.text.phonemize import g2p_phonemes
+from cv_preprocess.text.phonemize import g2p_phonemes_for_dataset
 
 _asr_batch_error_logged: list[bool] = [False]
 
@@ -152,8 +152,16 @@ def apply_asr_gate(
         per: float | None = None
         if ag.compare_phonemes:
             try:
-                ref_ph = g2p_phonemes(ref_n, kana=cfg.text.g2p_kana)
-                hyp_ph = g2p_phonemes(hyp_n, kana=cfg.text.g2p_kana)
+                ref_ph = g2p_phonemes_for_dataset(
+                    ref_n,
+                    kana=cfg.text.g2p_kana,
+                    word_separator=cfg.text.phoneme_word_separator,
+                )
+                hyp_ph = g2p_phonemes_for_dataset(
+                    hyp_n,
+                    kana=cfg.text.g2p_kana,
+                    word_separator=cfg.text.phoneme_word_separator,
+                )
                 per = token_error_rate(ref_ph, hyp_ph)
             except Exception:
                 if ag.decode_failure == "reject":
@@ -249,6 +257,34 @@ def apply_asr_gate(
             )
             reject_reasons["asr_phoneme_mismatch"] = reject_reasons.get("asr_phoneme_mismatch", 0) + 1
             continue
+
+        if ag.sync_text_norm_to_hypothesis:
+            p.text_norm = hyp_n
+        if ag.use_hypothesis_phonemes and cfg.text.phonemize:
+            try:
+                p.phonemes = g2p_phonemes_for_dataset(
+                    hyp_n,
+                    kana=cfg.text.g2p_kana,
+                    word_separator=cfg.text.phoneme_word_separator,
+                )
+            except Exception:
+                if ag.decode_failure == "reject":
+                    write_reject_row(
+                        rejects_path,
+                        {
+                            "source_path": p.row.path,
+                            "client_id": p.row.client_id,
+                            "reason": "asr_hypothesis_phonemize_failed",
+                            "sentence_excerpt": p.excerpt,
+                        },
+                        reject_fields,
+                    )
+                    reject_reasons["asr_hypothesis_phonemize_failed"] = (
+                        reject_reasons.get("asr_hypothesis_phonemize_failed", 0) + 1
+                    )
+                else:
+                    survivors.append(p)
+                continue
 
         survivors.append(p)
 

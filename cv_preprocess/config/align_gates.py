@@ -134,6 +134,11 @@ class NfaGateConfig(BaseModel):
     #: ``compare_tokens_to_g2p: true`` 時に推奨。形式は ``mfa_to_g2p_token_map_path`` と同じ（キーが NFA トークン）。
     nfa_to_g2p_token_map_path: Path | None = None
     prefilter: NfaPrefilterConfig = Field(default_factory=NfaPrefilterConfig)
+    #: enhance 後の **最終** ``run_quality_gate``（accept 直前）に ``quality_gate`` へマージする上書き。
+    #: ``nfa_gate.enabled: true`` のときのみ有効。空ならルート ``quality_gate`` のみ。
+    quality_gate_overrides: dict[str, Any] = Field(default_factory=dict)
+    #: 最終品質ゲート用プロファイル名（``quality_gate_profiles`` のキー）。``quality_gate`` より先にベースとしてマージし、続けて ``quality_gate_overrides`` を適用。
+    quality_gate_profile: str | None = None
 
     @field_validator("pretrained_name", mode="before")
     @classmethod

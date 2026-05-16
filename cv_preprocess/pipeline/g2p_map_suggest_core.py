@@ -8,6 +8,14 @@ from typing import Any, Literal
 
 import yaml
 
+ClipTextRejectReason = Literal["text_locale", "text_not_japanese", "text_length"]
+
+_CLIP_TEXT_REJECT_TO_SKIP_COUNT: dict[ClipTextRejectReason, str] = {
+    "text_locale": "skipped_text_locale",
+    "text_not_japanese": "skipped_text_not_japanese",
+    "text_length": "skipped_text_length",
+}
+
 from cv_preprocess.config import PipelineConfig
 from cv_preprocess.io.tsv_loader import ClipRow
 from cv_preprocess.pipeline.export import write_json_report
@@ -17,13 +25,15 @@ from cv_preprocess.pipeline.token_map_suggest import (
 )
 from cv_preprocess.text.language_detect import passes_japanese_policy, passes_locale_expected
 from cv_preprocess.text.normalize import normalize_for_tts
-from cv_preprocess.text.phonemize import g2p_phonemes
+from cv_preprocess.text.phonemize import g2p_phonemes_for_dataset
 
 Strategy = Literal["adaptive", "zip_only", "proportional_only"]
 ReportSourceKey = Literal["mfa", "nfa"]
 
-def _g2p_tokens(text_norm: str, *, kana: bool) -> list[str]:
-    s = g2p_phonemes(text_norm, kana=kana).replace("\t", " ").strip()
+def _g2p_tokens(text_norm: str, *, kana: bool, word_separator: str | None = None) -> list[str]:
+    s = g2p_phonemes_for_dataset(
+        text_norm, kana=kana, word_separator=word_separator
+    ).replace("\t", " ").strip()
     return [x for x in s.split() if x]
 
 
@@ -62,22 +72,31 @@ def _collect_votes_for_row(
     return _pairs_proportional(align_tokens, g2p), "proportional"
 
 
+def validate_clip_text_norm(
+    row: ClipRow,
+    cfg: PipelineConfig,
+) -> tuple[str | None, ClipTextRejectReason | None]:
+    """ロケール・日本語・長さを検証し、通過時は ``(text_norm, None)``、失敗時は ``(None, reason)``。"""
+    if not passes_locale_expected(row.locale, cfg.input.locale_expected):
+        return None, "text_locale"
+    text_norm = normalize_for_tts(row.sentence)
+    if not passes_japanese_policy(text_norm, cfg.text.require_japanese):
+        return None, "text_not_japanese"
+    tl = len(text_norm)
+    if tl < cfg.text.min_text_len or tl > cfg.text.max_text_len:
+        return None, "text_length"
+    return text_norm, None
+
+
 def try_normalize_clip_text(
     row: ClipRow,
     cfg: PipelineConfig,
     counts: dict[str, int],
 ) -> str | None:
     """ロケール・日本語・長さチェック後の ``text_norm``。スキップ時は ``counts`` を増やして ``None``。"""
-    if not passes_locale_expected(row.locale, cfg.input.locale_expected):
-        counts["skipped_text_locale"] += 1
-        return None
-    text_norm = normalize_for_tts(row.sentence)
-    if not passes_japanese_policy(text_norm, cfg.text.require_japanese):
-        counts["skipped_text_not_japanese"] += 1
-        return None
-    tl = len(text_norm)
-    if tl < cfg.text.min_text_len or tl > cfg.text.max_text_len:
-        counts["skipped_text_length"] += 1
+    text_norm, rej = validate_clip_text_norm(row, cfg)
+    if rej is not None:
+        counts[_CLIP_TEXT_REJECT_TO_SKIP_COUNT[rej]] += 1
         return None
     return text_norm
 
@@ -92,7 +111,11 @@ def try_normalize_and_g2p_tokens(
     if text_norm is None:
         return None
     try:
-        g2p_toks = _g2p_tokens(text_norm, kana=cfg.text.g2p_kana)
+        g2p_toks = _g2p_tokens(
+            text_norm,
+            kana=cfg.text.g2p_kana,
+            word_separator=cfg.text.phoneme_word_separator,
+        )
     except Exception:
         counts["skipped_phonemize_failed"] += 1
         return None

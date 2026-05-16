@@ -4,7 +4,7 @@ import csv
 from pathlib import Path
 
 from cv_preprocess.config import PipelineConfig
-from cv_preprocess.io.tsv_loader import load_validated_tsv, prepare_clip_rows
+from cv_preprocess.io.tsv_loader import ClipRow, load_validated_tsv, prepare_clip_rows
 from cv_preprocess.pipeline.scan import scan_corpus
 
 
@@ -125,6 +125,29 @@ def test_prepare_clip_rows_speaker_filter_without_merge(tmp_path: Path) -> None:
     assert after_cap == 1
     assert [r.client_id for r in filtered] == ["keep"]
     assert [r.client_id for r in rows] == ["keep", "drop"]
+
+
+def test_prepare_clip_rows_ignores_max_clips_per_speaker_at_load(tmp_path: Path) -> None:
+    """max_clips_per_speaker は preprocess の採用段階でのみ効く（行読み込みでは絞らない）。"""
+    rows = [
+        ClipRow("s1", "b.mp3", "x", {}, locale=None, sentence_id=None),
+        ClipRow("s1", "a.mp3", "y", {}, locale=None, sentence_id=None),
+        ClipRow("s2", "c.mp3", "z", {}, locale=None, sentence_id=None),
+    ]
+    cfg = PipelineConfig.model_validate(
+        {
+            "input": {"corpus_root": tmp_path},
+            "speakers": {"max_clips_per_speaker": 2},
+        }
+    )
+    filtered, after_sp, after_meta, after_cap = prepare_clip_rows(
+        rows,
+        cfg,
+        apply_speaker_merge=False,
+        sort_by_path=True,
+    )
+    assert after_cap == 3
+    assert len(filtered) == 3
 
 
 def test_scan_corpus_uses_shared_row_filters(tmp_path: Path) -> None:
