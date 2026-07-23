@@ -15,18 +15,23 @@ def _atomic_replace(partial: Path, final: Path) -> None:
     partial.replace(final)
 
 
+def _column_dtype(schema_type: str) -> pl.DataType:
+    if schema_type == "string":
+        return pl.Utf8
+    if schema_type == "int64":
+        return pl.Int64
+    if schema_type == "float64":
+        return pl.Float64
+    if schema_type == "list[string]":
+        return pl.List(pl.Utf8)
+    return pl.Utf8
+
+
 def _normalize_clips_df(df: pl.DataFrame) -> pl.DataFrame:
     for col in CLIPS_COLUMNS:
         if col not in df.columns:
             dtype = CLIPS_SCHEMA[col]
-            if dtype == "string":
-                df = df.with_columns(pl.lit(None, dtype=pl.Utf8).alias(col))
-            elif dtype == "int64":
-                df = df.with_columns(pl.lit(None, dtype=pl.Int64).alias(col))
-            elif dtype == "float64":
-                df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias(col))
-            else:
-                df = df.with_columns(pl.lit(None).alias(col))
+            df = df.with_columns(pl.lit(None, dtype=_column_dtype(dtype)).alias(col))
     return df.select(CLIPS_COLUMNS)
 
 

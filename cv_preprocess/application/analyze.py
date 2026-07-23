@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 
 from cv_preprocess.application.common import AnalyzeResult, CancellationToken, ProgressEvent, ProgressSink
 from cv_preprocess.audio.decode import load_audio
@@ -16,6 +17,12 @@ from cv_preprocess.audio.resample import resample_audio
 from cv_preprocess.catalog.cache import cached_wav_path, pipeline_cache_key, write_wav_atomic
 from cv_preprocess.catalog.ids import stable_clip_id
 from cv_preprocess.catalog.models import ClipDisposition
+from cv_preprocess.catalog.aggregates import (
+    build_duplicate_groups,
+    build_feature_counts,
+    build_speaker_stats,
+)
+from cv_preprocess.catalog.linguistic_enrich import enrich_row_with_linguistic_features
 from cv_preprocess.catalog.writer import write_catalog_bundle
 from cv_preprocess.config import PipelineConfig
 from cv_preprocess.io.tsv_loader import ClipRow, iter_clip_audio_paths, load_clip_rows_for_pipeline
@@ -108,6 +115,11 @@ def _base_catalog_row(
         "analyzed_at": datetime.now(timezone.utc).isoformat(),
         "phonemes": None,
         "feature_source": None,
+        "biphones": None,
+        "triphones": None,
+        "moras": None,
+        "fullcontext_labels": None,
+        "analysis_warnings": None,
         "audio_cache_rel_path": None,
         "duration_sec": None,
         "quality_score": None,
@@ -178,6 +190,13 @@ def analyze_clip_with_gates(
         return _hard_rejected_row(base, reason="phonemize_failed")
     base["phonemes"] = phonemes
     base["feature_source"] = feature_source if phonemes else None
+    enrich_row_with_linguistic_features(
+        base,
+        text_norm=text_norm,
+        phonemes=phonemes,
+        duration_sec=None,
+        config=config,
+    )
 
     mora_early, mora_pref, mora_fin = _mora_gates_needed(lang, config, align_prefilter_qg=None)
     clip_mora_count, mora_reject_reason = _compute_clip_mora_count_once(
@@ -271,6 +290,13 @@ def analyze_clip_with_gates(
     out["estimated_snr_db"] = gate.estimated_snr_db
     out["silence_ratio"] = gate.silence_ratio
     out["audio_cache_rel_path"] = cache_rel
+    enrich_row_with_linguistic_features(
+        out,
+        text_norm=text_norm,
+        phonemes=phonemes,
+        duration_sec=gate.duration_sec,
+        config=config,
+    )
     return ClipAnalyzeOutcome(
         row=out,
         disposition=ClipDisposition.ELIGIBLE,
@@ -350,9 +376,16 @@ def analyze_project(
         "total_clips": total,
         "linguistic_module_available": _linguistic_module_available(),
     }
+    clips_df = pl.DataFrame(catalog_rows)
+    feature_counts_df = build_feature_counts(clips_df)
+    speaker_stats_df = build_speaker_stats(clips_df)
+    duplicate_groups_df = build_duplicate_groups(clips_df)
     catalog = write_catalog_bundle(
         config.dataset_builder.work_dir,
-        catalog_rows,
+        clips_df,
+        feature_counts_df=feature_counts_df,
+        speaker_stats_df=speaker_stats_df,
+        duplicate_groups_df=duplicate_groups_df,
         manifest=manifest,
     )
     return AnalyzeResult(
