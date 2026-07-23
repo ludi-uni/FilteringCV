@@ -358,13 +358,6 @@ class FeatureSupportConfig(BaseModel):
         return value
 
 
-class LeakagePolicyConfig(BaseModel):
-    speaker: Literal["forbid", "forbid_for_test", "allow"] = "forbid"
-    audio_hash: Literal["forbid", "forbid_for_test", "allow"] = "forbid"
-    sentence_id: Literal["forbid", "forbid_for_test", "allow"] = "forbid_for_test"
-    normalized_text: Literal["forbid", "forbid_for_test", "allow"] = "forbid_for_test"
-
-
 class MaterializeConfig(BaseModel):
     mode: Literal["copy", "hardlink", "symlink"] = "copy"
     output_root: Path | None = None

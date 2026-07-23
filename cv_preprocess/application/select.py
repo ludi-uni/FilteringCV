@@ -241,6 +241,22 @@ def write_selection_plan_parquet(
     _atomic_write_parquet(path, pl.DataFrame(rows))
 
 
+def load_selection_plan(catalog: CatalogRef, plan_path: Path) -> SelectionPlan:
+    plan_df = pl.read_parquet(plan_path)
+    selected_ids = plan_df.filter(pl.col("disposition") == ClipDisposition.SELECTED.value)[
+        "clip_id"
+    ].to_list()
+    reserve_ids = plan_df.filter(pl.col("disposition") == ClipDisposition.RESERVE.value)[
+        "clip_id"
+    ].to_list()
+    return SelectionPlan(
+        catalog=catalog,
+        selected_clip_ids=[str(clip_id) for clip_id in selected_ids],
+        reserve_clip_ids=[str(clip_id) for clip_id in reserve_ids],
+        plan_path=plan_path,
+    )
+
+
 def select_dataset(
     config: PipelineConfig,
     catalog: CatalogRef,

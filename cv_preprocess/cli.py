@@ -11,7 +11,7 @@ from cv_preprocess.application.analyze import analyze_project
 from cv_preprocess.application.audit import audit_dataset
 from cv_preprocess.application.build import build_dataset
 from cv_preprocess.application.materialize import materialize_dataset
-from cv_preprocess.application.select import select_dataset
+from cv_preprocess.application.select import load_selection_plan, select_dataset
 from cv_preprocess.application.split import load_split_plan, plan_dataset_split
 from cv_preprocess.catalog.reader import load_catalog
 from cv_preprocess.config import load_config
@@ -65,8 +65,6 @@ def cmd_plan_split(
     config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
 ) -> None:
     """Dataset builder plan-split: assign speakers/clips to train/val/test splits."""
-    from cv_preprocess.application.split import plan_dataset_split
-
     cfg = load_config(config)
     work_dir = cfg.dataset_builder.work_dir
     catalog = load_catalog(work_dir)
@@ -90,6 +88,108 @@ def cmd_plan_split(
     )
 
 
+@app.command("materialize")
+def cmd_materialize(
+    config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+) -> None:
+    """Dataset builder materialize: export selected clips to output directory."""
+    cfg = load_config(config)
+    work_dir = cfg.dataset_builder.work_dir
+    catalog = load_catalog(work_dir)
+    if catalog.clips_path is None:
+        raise typer.BadParameter(f"catalog not found under {work_dir / 'catalog'}")
+    plan_path = work_dir / "plans" / "selection_plan.parquet"
+    if not plan_path.is_file():
+        raise typer.BadParameter(f"selection plan not found: {plan_path}")
+    selection_plan = load_selection_plan(catalog, plan_path)
+    result = materialize_dataset(cfg, catalog, selection_plan)
+    typer.echo(
+        json.dumps(
+            {
+                "output_root": result.output_root,
+                "selected_count": result.selected_count,
+                "manifest_paths": result.manifest_paths,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+@app.command("audit")
+def cmd_audit(
+    config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+) -> None:
+    """Dataset builder audit: validate selection and split integrity."""
+    cfg = load_config(config)
+    work_dir = cfg.dataset_builder.work_dir
+    catalog = load_catalog(work_dir)
+    if catalog.clips_path is None:
+        raise typer.BadParameter(f"catalog not found under {work_dir / 'catalog'}")
+    plan_path = work_dir / "plans" / "selection_plan.parquet"
+    if not plan_path.is_file():
+        raise typer.BadParameter(f"selection plan not found: {plan_path}")
+    selection_plan = load_selection_plan(catalog, plan_path)
+    result = audit_dataset(cfg, catalog, selection_plan)
+    typer.echo(
+        json.dumps(
+            {
+                "passed": result.passed,
+                "issues": result.issues,
+                "catalog": result.catalog.model_dump(mode="json"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+@app.command("build")
+def cmd_build(
+    config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+    force: bool = typer.Option(False, "--force", help="Re-run stages even if artifacts exist"),
+) -> None:
+    """Dataset builder build: orchestrate scan through audit with stage resume."""
+    cfg = load_config(config)
+    (
+        scan_result,
+        analyze_result,
+        split_plan,
+        selection_plan,
+        materialize_result,
+        audit_report,
+    ) = build_dataset(cfg, force=force)
+    typer.echo(
+        json.dumps(
+            {
+                "scan": scan_result.model_dump(mode="json"),
+                "analyze": {
+                    "eligible_count": analyze_result.eligible_count,
+                    "hard_rejected_count": analyze_result.hard_rejected_count,
+                    "warnings": analyze_result.warnings,
+                },
+                "split_protocol": split_plan.protocol,
+                "selected_count": len(selection_plan.selected_clip_ids),
+                "materialize_output_root": materialize_result.output_root,
+                "audit_passed": audit_report.passed,
+                "audit_issues": audit_report.issues,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+@app.command("compare-runs")
+def cmd_compare_runs(
+    left: Path = typer.Argument(..., exists=True, path_type=Path, help="Left work or output dir"),
+    right: Path = typer.Argument(..., exists=True, path_type=Path, help="Right work or output dir"),
+) -> None:
+    """Compare two dataset builder runs or materialized outputs."""
+    report = compare_runs(left, right)
+    typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
+
+
 @app.command("select")
 def cmd_select(
     config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
@@ -100,9 +200,11 @@ def cmd_select(
     catalog = load_catalog(work_dir)
     if catalog.clips_path is None:
         raise typer.BadParameter(f"catalog not found under {work_dir / 'catalog'}")
-    from cv_preprocess.application.split import plan_dataset_split
-
-    split_plan = plan_dataset_split(cfg, catalog)
+    split_plan_path = work_dir / "plans" / "split_plan.json"
+    if split_plan_path.is_file():
+        split_plan = load_split_plan(catalog, split_plan_path)
+    else:
+        split_plan = plan_dataset_split(cfg, catalog)
     result = select_dataset(cfg, catalog, split_plan)
     typer.echo(
         json.dumps(
@@ -233,6 +335,34 @@ def cmd_preprocess(
     ),
 ) -> None:
     cfg = load_config(config)
+    if cfg.dataset_builder.enabled:
+        warnings.warn(
+            "dataset_builder.enabled is true; delegating preprocess to build_dataset. "
+            "Prefer `cv-preprocess build` directly.",
+            UserWarning,
+            stacklevel=1,
+        )
+        (
+            _scan,
+            _analyze,
+            _split,
+            selection_plan,
+            materialize_result,
+            audit_report,
+        ) = build_dataset(cfg)
+        typer.echo(
+            json.dumps(
+                {
+                    "delegated_to": "build_dataset",
+                    "selected_count": len(selection_plan.selected_clip_ids),
+                    "materialize_output_root": materialize_result.output_root,
+                    "audit_passed": audit_report.passed,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
     report = run_preprocess(cfg, show_progress=not no_progress)
     typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
 
