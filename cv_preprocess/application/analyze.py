@@ -17,11 +17,8 @@ from cv_preprocess.audio.resample import resample_audio
 from cv_preprocess.catalog.cache import cached_wav_path, pipeline_cache_key, write_wav_atomic
 from cv_preprocess.catalog.ids import stable_clip_id
 from cv_preprocess.catalog.models import ClipDisposition
-from cv_preprocess.catalog.aggregates import (
-    build_duplicate_groups,
-    build_feature_counts,
-    build_speaker_stats,
-)
+from cv_preprocess.catalog.aggregates import build_speaker_stats
+from cv_preprocess.compute.loader import resolve_compute_backend
 from cv_preprocess.catalog.linguistic_enrich import enrich_row_with_linguistic_features
 from cv_preprocess.catalog.writer import write_catalog_bundle
 from cv_preprocess.config import PipelineConfig
@@ -377,9 +374,10 @@ def analyze_project(
         "linguistic_module_available": _linguistic_module_available(),
     }
     clips_df = pl.DataFrame(catalog_rows)
-    feature_counts_df = build_feature_counts(clips_df)
+    compute = resolve_compute_backend(config.compute.backend)
+    feature_counts_df = compute.count_features(clips_df)
     speaker_stats_df = build_speaker_stats(clips_df)
-    duplicate_groups_df = build_duplicate_groups(clips_df)
+    duplicate_groups_df = compute.build_duplicate_groups(clips_df)
     catalog = write_catalog_bundle(
         config.dataset_builder.work_dir,
         clips_df,

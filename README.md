@@ -45,6 +45,13 @@ PyTorch は **CUDA 12.x（公式ホイール `cu128`）** 向けに `pyproject.t
 | [docs/開発環境.md](docs/開発環境.md) | Dev Container、`uv` / GPU、optional extra（**Sidon** が既定構成。Dasheng・SGMSE・HiFi-GAN・WPE+DFN は設定に応じて追加） |
 | [docs/音素照合マニフェスト.md](docs/音素照合マニフェスト.md) | `phoneme_alignment_check` 用 JSONL と `phoneme-manifest` |
 | [docs/追加仕様.md](docs/追加仕様.md) | 多話者データセット論点・二次パイプライン・HiFi-GAN（§10–§12） |
+| [docs/architecture.md](docs/architecture.md) | データセットビルダーと Core API の全体構成 |
+| [docs/dataset-builder.md](docs/dataset-builder.md) | ビルダー CLI・設定・ワークフロー |
+| [docs/catalog-schema.md](docs/catalog-schema.md) | `work/catalog/*.parquet` の列定義 |
+| [docs/selection-algorithm.md](docs/selection-algorithm.md) | カバレッジ選択アルゴリズム |
+| [docs/gui.md](docs/gui.md) | 任意 GUI extra（FastAPI + React） |
+| [docs/migration-v1-v2.md](docs/migration-v1-v2.md) | 従来 `preprocess` からビルダーへの移行 |
+| [docs/rust-boundary.md](docs/rust-boundary.md) | ComputeBackend / 将来のネイティブ境界 |
 
 ## 使い方
 
@@ -79,3 +86,32 @@ Common Voice の `validated.tsv` は **タブ区切りのテキスト**ですが
 | `cv-preprocess phonemize "<文>"` | 正規化のうえ G2P した音素列を出力します。読みをカナで出す場合は `--kana` を付けます。 |
 
 本番の一連の流れは、**設定を用意 → `scan` で確認 → `preprocess`** が基本です。
+
+### データセットビルダー（`dataset_builder.enabled: true`）
+
+YAML で `dataset_builder.enabled: true` を指定すると、カタログ Parquet・カバレッジ選択・分割・書き出しのビルダーパイプラインが有効になります。詳細は [docs/dataset-builder.md](docs/dataset-builder.md) を参照してください。
+
+| コマンド | 説明 |
+|----------|------|
+| `cv-preprocess analyze -c <設定.yaml>` | コーパスを解析し `work/catalog/` と音声キャッシュを生成 |
+| `cv-preprocess plan-split -c <設定.yaml>` | train/val/test 分割計画を作成 |
+| `cv-preprocess select -c <設定.yaml>` | カタログから貪欲カバレッジ選択 |
+| `cv-preprocess materialize -c <設定.yaml>` | 選択クリップを出力ディレクトリへ書き出し |
+| `cv-preprocess audit -c <設定.yaml>` | 選択・分割の整合性チェック |
+| `cv-preprocess build -c <設定.yaml> [--force]` | 上記を段階的にオーケストレート（途中成果物があれば再開） |
+| `cv-preprocess compare-runs <left> <right>` | 2 つの `work/` または出力ディレクトリを比較 |
+| `cv-preprocess benchmark-selection --catalog work/catalog/clips.parquet [--repeat 3]` | 選択スコアリング・貪欲選択のベンチマーク（JSON タイミング） |
+
+`dataset_builder.enabled: true` のとき `cv-preprocess preprocess` は警告のうえ `build` に委譲します。従来の逐次前処理だけを使う場合は `enabled: false` のままにしてください。
+
+#### GUI（任意）
+
+```bash
+uv sync --extra gui
+```
+
+FastAPI バックエンド用の依存が入ります。`frontend/` がある場合は `cd frontend && pnpm install && pnpm build` で静的アセットをビルドし、`cv-preprocess gui -c <設定.yaml>` で起動します（既定 `127.0.0.1:8765`）。手順は [docs/gui.md](docs/gui.md) を参照。
+
+#### 計算バックエンド
+
+`compute.backend: auto`（既定）で Polars 実装を使用し、不可時は Python にフォールバックします。`run_manifest.json` にステージ時間とリソース使用量が記録されます。

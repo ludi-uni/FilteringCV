@@ -25,6 +25,7 @@ from cv_preprocess.application.select import load_selection_plan, select_dataset
 from cv_preprocess.application.split import load_split_plan, plan_dataset_split
 from cv_preprocess.catalog.reader import load_catalog
 from cv_preprocess.config import PipelineConfig
+from cv_preprocess.compute.profiling import resource_snapshot
 from cv_preprocess.reports.serializer import write_json_atomic
 
 
@@ -150,6 +151,7 @@ def build_dataset(
     stage_skipped["audit"] = False
 
     stage_timings["total"] = time.perf_counter() - started
+    resources = resource_snapshot()
     manifest = {
         "schema_version": config.schema_version,
         "config_hash": config_hash(config),
@@ -157,6 +159,7 @@ def build_dataset(
         "stage_timings_sec": stage_timings,
         "stage_skipped": stage_skipped,
         "counts": counts,
+        "resources": resources.as_dict(),
         "cache": {
             "hits": None,
             "misses": None,

@@ -8,6 +8,7 @@ from typing import cast
 import typer
 
 from cv_preprocess.application.analyze import analyze_project
+from cv_preprocess.application.benchmark_selection import benchmark_selection
 from cv_preprocess.application.audit import audit_dataset
 from cv_preprocess.application.build import build_dataset
 from cv_preprocess.application.materialize import materialize_dataset
@@ -37,6 +38,37 @@ def cmd_scan(
     cfg = load_config(config)
     info = scan_corpus(cfg)
     typer.echo(json.dumps(info, ensure_ascii=False, indent=2))
+
+
+@app.command("benchmark-selection")
+def cmd_benchmark_selection(
+    catalog: Path = typer.Option(
+        ...,
+        "--catalog",
+        exists=True,
+        path_type=Path,
+        help="Path to catalog/clips.parquet",
+    ),
+    repeat: int = typer.Option(3, "--repeat", min=1, help="Number of timed repetitions"),
+    backend: str = typer.Option("auto", "--backend", help="auto | polars | python"),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        exists=True,
+        path_type=Path,
+        help="Optional pipeline config for selection weights/constraints",
+    ),
+) -> None:
+    """Benchmark selection scoring and greedy selection on an existing catalog."""
+    cfg = load_config(config) if config is not None else None
+    report = benchmark_selection(
+        catalog,
+        config=cfg,
+        repeat=repeat,
+        backend=backend,
+    )
+    typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 @app.command("analyze")
@@ -575,6 +607,33 @@ def cmd_phonemize(
     kana: bool = typer.Option(False, "--kana", help="Output kana instead of phonemes"),
 ) -> None:
     typer.echo(g2p_phonemes(normalize_for_tts(text), kana=kana))
+
+
+@app.command("gui")
+def cmd_gui(
+    config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind host (default localhost only)"),
+    port: int = typer.Option(8765, "--port", help="Bind port"),
+    project_root: Path | None = typer.Option(
+        None,
+        "--project-root",
+        path_type=Path,
+        help="Project root for resolving work/output paths (default: config parent)",
+    ),
+) -> None:
+    """Start the dataset builder FastAPI GUI (serves frontend/dist when built)."""
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise typer.BadParameter(
+            "GUI dependencies missing; install with: uv sync --extra gui"
+        ) from exc
+
+    from cv_preprocess.web.app import create_app
+
+    root = project_root.resolve() if project_root is not None else config.resolve().parent
+    app = create_app(config.resolve(), root)
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 def main() -> None:
