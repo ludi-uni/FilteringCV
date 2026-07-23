@@ -74,6 +74,14 @@ def test_materialize_copy_mode(tmp_path: Path) -> None:
     metadata = (output_root / "metadata.jsonl").read_text(encoding="utf-8")
     assert "clip_a" in metadata
     assert (output_root / "train.jsonl").is_file()
+    validated = (output_root / "validated.tsv").read_text(encoding="utf-8").strip().splitlines()
+    assert len(validated) == 2
+    assert validated[0].startswith("wavs/")
+    assert "\t" in validated[0]
+    meta_csv = (output_root / "metadata.csv").read_text(encoding="utf-8").strip().splitlines()
+    assert len(meta_csv) == 2
+    assert meta_csv[0].count("|") == 2
+    assert (output_root / "train.tsv").is_file()
 
 
 def test_materialize_symlink_falls_back_to_copy(tmp_path: Path) -> None:

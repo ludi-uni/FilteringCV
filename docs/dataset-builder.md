@@ -20,7 +20,8 @@ cv-preprocess build -c config/my_builder.yaml
 | Analyze | `analyze` | `work/catalog/*.parquet`, audio cache |
 | Plan split | `plan-split` | `work/plans/split_plan.json` |
 | Select | `select` | `work/plans/selection_plan.parquet` |
-| Materialize | `materialize` | WAVs + metadata under output dir |
+| Materialize | `materialize` | `wavs/` + LJSpeech `validated.tsv` / `metadata.csv` + `metadata.jsonl` + split manifests |
+
 | Audit | `audit` | Integrity checks |
 | Full pipeline | `build` | All of the above + `run_manifest.json` |
 
@@ -68,5 +69,17 @@ Optional: `--backend python|polars|auto`, `--config` for custom selection weight
 ## Legacy compatibility
 
 When `dataset_builder.enabled: false`, `cv-preprocess preprocess` runs the original pipeline unchanged. When enabled, `preprocess` warns and delegates to `build`.
+
+## TTS audio quality (Sidon)
+
+Materialize only exports `work/audio_cache` WAVs. Cleaning happens in **analyze**:
+
+1. Put Sidon in `audio_pipeline_enhance` (`type: sidon_restore`) and set `two_pass_denoise.enabled: true` (see `config/default.yaml` / `config/example.yaml`).
+2. Install deps: `uv sync --extra sidon`
+3. Re-run analyze after changing the audio pipeline (`pipeline_hash` changes → new cache):  
+   `cv-preprocess analyze -c config/default.yaml --force` (or Build with force on analyze)
+4. Then re-run select → materialize (or full `build --force` as needed)
+
+Without the enhance chain, exported `wavs/` are essentially decoded/resampled only.
 
 See also: [selection-algorithm.md](selection-algorithm.md), [catalog-schema.md](catalog-schema.md).

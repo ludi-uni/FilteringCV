@@ -257,7 +257,20 @@ def write_selection_plan_parquet(
                 "reserve_reason": getattr(explanation, "reserve_reason", None),
             }
         )
-    _atomic_write_parquet(path, pl.DataFrame(rows))
+    # Explicit schema: selected rows often have null reserve_reason for far more than
+    # Polars' default infer_schema_length (100), which then rejects later string values.
+    schema = {
+        "clip_id": pl.Utf8,
+        "disposition": pl.Utf8,
+        "split": pl.Utf8,
+        "selection_score": pl.Float64,
+        "selection_rank": pl.Int64,
+        "positive_contributions": pl.Utf8,
+        "penalties": pl.Utf8,
+        "selected_reason": pl.Utf8,
+        "reserve_reason": pl.Utf8,
+    }
+    _atomic_write_parquet(path, pl.DataFrame(rows, schema=schema))
 
 
 def load_selection_plan(catalog: CatalogRef, plan_path: Path) -> SelectionPlan:

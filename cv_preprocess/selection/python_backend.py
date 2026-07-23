@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import heapq
 import random
 import time
 from collections import Counter
@@ -26,7 +27,10 @@ from cv_preprocess.selection.protocol import (
     SelectionResult,
 )
 from cv_preprocess.selection.scoring import (
+    dedupe_clip_features,
     pool_counts_for_family,
+    precompute_family_score_tables,
+    score_clip_fast,
     speaker_counts_for_family,
     total_selection_score,
 )
@@ -203,6 +207,15 @@ def greedy_local_search(
     speaker_sets_by_family = {
         family: speaker_counts_for_family(eligible, family) for family in feature_weights
     }
+    target_tables = precompute_family_score_tables(
+        feature_weights=feature_weights,
+        temperatures=temperatures,
+        pool_counts_by_family=pool_counts_by_family,
+        utterance_counts_by_family=utterance_counts_by_family,
+        speaker_sets_by_family=speaker_sets_by_family,
+        min_utterances_by_family=min_utterances,
+        min_speakers_by_family=min_speakers,
+    )
 
     state = ConstraintState()
     current_counts_by_family: dict[str, Counter[str]] = {
@@ -221,12 +234,15 @@ def greedy_local_search(
     max_duration = target_duration_sec * (1.0 + tolerance_ratio)
     last_progress_at = 0.0
     greedy_steps = 0
-    remaining: list[ClipFeatures] = []
+    quality_weight = feature_weights.get("quality", 0.0)
+    speaker_diversity_weight = feature_weights.get("speaker_diversity", 0.0)
+    # Pre-dedupe tokens once; scoring is O(features) and called millions of times.
+    features_cache = {clip.clip_id: dedupe_clip_features(clip) for clip in eligible}
 
-    def report_greedy(*, force: bool = False) -> None:
+    def report_greedy(*, force: bool = False, remaining_n: int = 0) -> None:
         nonlocal last_progress_at
         now = time.monotonic()
-        if not force and (now - last_progress_at) < 0.4:
+        if not force and (now - last_progress_at) < 0.5:
             return
         last_progress_at = now
         duration_frac = (
@@ -238,7 +254,7 @@ def greedy_local_search(
             message=(
                 f"greedy selected={len(selected)} "
                 f"duration={state.total_duration_sec / 3600.0:.3f}h / {target_hours:.2f}h "
-                f"remaining={len(remaining)}"
+                f"remaining={remaining_n}"
             ),
             current=len(selected),
             total=max(len(selected) + 1, len(eligible)),
@@ -250,7 +266,7 @@ def greedy_local_search(
             greedy_steps=greedy_steps,
         )
 
-    def score_clip(clip: ClipFeatures) -> tuple[float, dict, dict]:
+    def explain_clip(clip: ClipFeatures) -> tuple[float, dict, dict]:
         return total_selection_score(
             clip,
             feature_weights=feature_weights,
@@ -263,12 +279,26 @@ def greedy_local_search(
             min_utterances_by_family=min_utterances,
             min_speakers_by_family=min_speakers,
             selected_speakers=state.selected_speakers,
-            quality_weight=feature_weights.get("quality", 0.0),
-            speaker_diversity_weight=feature_weights.get("speaker_diversity", 0.0),
+            quality_weight=quality_weight,
+            speaker_diversity_weight=speaker_diversity_weight,
+            target_tables=target_tables,
+        )
+
+    def score_only(clip: ClipFeatures) -> float:
+        return score_clip_fast(
+            clip,
+            feature_weights=feature_weights,
+            diminishing_tau=diminishing_tau,
+            target_tables=target_tables,
+            current_counts_by_family=current_counts_by_family,
+            selected_speakers=state.selected_speakers,
+            quality_weight=quality_weight,
+            speaker_diversity_weight=speaker_diversity_weight,
+            features_by_family=features_cache.get(clip.clip_id),
         )
 
     def commit_selection(clip: ClipFeatures, reason: str) -> None:
-        clip_score, positive, penalties = score_clip(clip)
+        clip_score, positive, penalties = explain_clip(clip)
         selected.append(clip.clip_id)
         add_clip_to_state(clip, state, constraint_config)
         for family, tokens in clip.features_by_family.items():
@@ -292,52 +322,117 @@ def greedy_local_search(
                 reserve_reason="force_include_blocked_by_constraints",
             )
 
-    remaining = [
-        clip for clip in eligible if clip.clip_id not in selected and clip.clip_id not in forced_exclude
-    ]
-    report_greedy(force=True)
+    remaining_ids = {
+        clip.clip_id
+        for clip in eligible
+        if clip.clip_id not in selected and clip.clip_id not in forced_exclude
+    }
 
-    while state.total_duration_sec < min_duration and remaining:
+    # Lazy greedy heap: (-score, clip_id). Scores can be stale after commits;
+    # revalidate top entries instead of rescanning all candidates every step.
+    heap: list[tuple[float, str]] = []
+    for clip_id in remaining_ids:
+        clip = clips_by_id[clip_id]
+        heapq.heappush(heap, (-score_only(clip), clip_id))
+
+    report_greedy(force=True, remaining_n=len(remaining_ids))
+    rebuild_every = 250 if len(remaining_ids) > 5000 else 100
+    steps_since_rebuild = 0
+
+    while state.total_duration_sec < min_duration and remaining_ids and heap:
         best_clip: ClipFeatures | None = None
         best_score = float("-inf")
-        best_positive: dict = {}
-        best_penalties: dict = {}
+        checked = 0
+        max_rechecks = min(128, max(16, len(remaining_ids) // 500 + 16))
+        batch_best: ClipFeatures | None = None
+        batch_best_score = float("-inf")
 
-        for clip in remaining:
+        while heap and checked < max_rechecks:
+            neg_score, clip_id = heapq.heappop(heap)
+            if clip_id not in remaining_ids:
+                continue
+            clip = clips_by_id[clip_id]
             if state.total_duration_sec + clip.duration_sec > max_duration:
+                remaining_ids.discard(clip_id)
                 continue
             ok, penalties = can_add_clip(clip, state, constraint_config)
             if not ok:
+                if "max_low_quality_ratio" in penalties:
+                    heapq.heappush(heap, (0.0, clip_id))
+                else:
+                    remaining_ids.discard(clip_id)
                 continue
-            clip_score, positive, score_penalties = score_clip(clip)
-            penalties.update(score_penalties)
-            if clip_score > best_score or (
-                clip_score == best_score and (best_clip is None or clip.clip_id < best_clip.clip_id)
+            fresh = score_only(clip)
+            checked += 1
+            if fresh > batch_best_score or (
+                fresh == batch_best_score
+                and (batch_best is None or clip.clip_id < batch_best.clip_id)
             ):
-                best_score = clip_score
-                best_clip = clip
-                best_positive = positive
-                best_penalties = penalties
-
-        if best_clip is None or best_score <= 0.0:
+                batch_best_score = fresh
+                batch_best = clip
+            # Stale heap entry: reinsert and keep scanning the batch.
+            if fresh + 1e-12 < -neg_score:
+                heapq.heappush(heap, (-fresh, clip_id))
+                continue
+            best_clip = clip
+            best_score = fresh
             break
 
+        if best_clip is None:
+            # Take the best among revalidated batch instead of O(n) full scan.
+            best_clip = batch_best
+            best_score = batch_best_score
+
+        if best_clip is None or best_score <= 0.0:
+            if not remaining_ids:
+                break
+            # Rare fallback: one full scan when the heap is empty/exhausted.
+            best_clip = None
+            best_score = float("-inf")
+            for clip_id in list(remaining_ids):
+                clip = clips_by_id[clip_id]
+                if state.total_duration_sec + clip.duration_sec > max_duration:
+                    continue
+                ok, _ = can_add_clip(clip, state, constraint_config)
+                if not ok:
+                    continue
+                fresh = score_only(clip)
+                if fresh > best_score or (
+                    fresh == best_score and (best_clip is None or clip.clip_id < best_clip.clip_id)
+                ):
+                    best_score = fresh
+                    best_clip = clip
+            if best_clip is None or best_score <= 0.0:
+                break
+            # Rebuild heap from remaining after fallback.
+            heap = [(-score_only(clips_by_id[cid]), cid) for cid in remaining_ids]
+            heapq.heapify(heap)
+            steps_since_rebuild = 0
+
+        clip_score, positive, penalties = explain_clip(best_clip)
         selected.append(best_clip.clip_id)
         add_clip_to_state(best_clip, state, constraint_config)
         for family, tokens in best_clip.features_by_family.items():
             for token in tokens:
                 current_counts_by_family.setdefault(family, Counter())[token] += 1
         explanations[best_clip.clip_id] = SelectionExplanation(
-            selection_score=best_score,
-            positive_contributions=best_positive,
-            penalties=best_penalties,
+            selection_score=clip_score,
+            positive_contributions=positive,
+            penalties=penalties,
             selected_reason="greedy_marginal_utility",
         )
-        remaining = [clip for clip in remaining if clip.clip_id != best_clip.clip_id]
+        remaining_ids.discard(best_clip.clip_id)
         greedy_steps += 1
-        report_greedy()
+        steps_since_rebuild += 1
 
-    report_greedy(force=True)
+        if steps_since_rebuild >= rebuild_every:
+            heap = [(-score_only(clips_by_id[cid]), cid) for cid in remaining_ids]
+            heapq.heapify(heap)
+            steps_since_rebuild = 0
+
+        report_greedy(remaining_n=len(remaining_ids))
+
+    report_greedy(force=True, remaining_n=len(remaining_ids))
 
     _emit_progress(
         progress,
@@ -350,29 +445,31 @@ def greedy_local_search(
         selected=len(selected),
     )
 
-    reserve_candidates = [clip for clip in eligible if clip.clip_id not in selected]
-    reserve_candidates.sort(
-        key=lambda clip: (
-            -score_clip(clip)[0],
-            clip.clip_id,
-        )
-    )
+    selected_set = set(selected)
+    reserve_candidates = [clip for clip in eligible if clip.clip_id not in selected_set]
+    scored_reserve = [(score_only(clip), clip.clip_id, clip) for clip in reserve_candidates]
+    scored_reserve.sort(key=lambda item: (-item[0], item[1]))
     reserve_count = int(round(len(eligible) * selection.reserve_ratio))
-    reserve_ids = [clip.clip_id for clip in reserve_candidates[:reserve_count]]
-    for clip in reserve_candidates:
-        if clip.clip_id in reserve_ids and clip.clip_id not in explanations:
-            clip_score, positive, penalties = score_clip(clip)
-            explanations[clip.clip_id] = SelectionExplanation(
-                selection_score=clip_score,
-                positive_contributions=positive,
-                penalties=penalties,
+    reserve_ids = [clip_id for _, clip_id, _ in scored_reserve[:reserve_count]]
+    reserve_id_set = set(reserve_ids)
+    for score, clip_id, clip in scored_reserve[:reserve_count]:
+        if clip_id not in explanations:
+            # Lightweight explanation for reserve top-k only.
+            explanations[clip_id] = SelectionExplanation(
+                selection_score=score,
                 reserve_reason="top_reserve_rank",
             )
 
-    if selection.local_search.enabled and selected and reserve_ids:
-        selected, reserve_ids, _ = local_search_improve(
+    # Local search only over a bounded reserve pool for large corpora.
+    ls_reserve_ids = reserve_ids
+    max_ls_reserve = 2000
+    if len(ls_reserve_ids) > max_ls_reserve:
+        ls_reserve_ids = ls_reserve_ids[:max_ls_reserve]
+
+    if selection.local_search.enabled and selected and ls_reserve_ids:
+        selected, ls_reserve_ids, _ = local_search_improve(
             selected,
-            reserve_ids,
+            ls_reserve_ids,
             clips_by_id,
             feature_weights=feature_weights,
             diminishing_tau=diminishing_tau,
@@ -386,16 +483,38 @@ def greedy_local_search(
             max_wall_sec=selection.local_search.max_wall_sec,
             progress=progress,
             progress_label=progress_label,
+            target_tables=target_tables,
+            seed=seed,
         )
+        # Merge local-search reserve head back into full reserve ordering.
+        ls_set = set(ls_reserve_ids)
+        reserve_ids = ls_reserve_ids + [cid for cid in reserve_ids if cid not in ls_set]
 
     for rank, clip_id in enumerate(selected, start=1):
         if clip_id in explanations:
             explanations[clip_id].rank = rank
 
-    tail_ids = [clip.clip_id for clip in reserve_candidates if clip.clip_id not in reserve_ids]
+    tail_ids = [
+        clip_id
+        for _, clip_id, _ in scored_reserve
+        if clip_id not in reserve_id_set and clip_id not in set(selected)
+    ]
+    # After local search, selected may have changed; rebuild reserve excluding selected.
+    selected_set = set(selected)
+    reserve_ids = [cid for cid in reserve_ids if cid not in selected_set]
+    seen_reserve = set(reserve_ids)
+    for clip_id in tail_ids:
+        if clip_id in selected_set or clip_id in seen_reserve:
+            continue
+        reserve_ids.append(clip_id)
+        seen_reserve.add(clip_id)
+
     rng = random.Random(seed)
-    rng.shuffle(tail_ids)
-    reserve_ids.extend(tail_ids)
+    # Keep top reserve_count stable; shuffle only the long tail beyond that.
+    head = reserve_ids[:reserve_count]
+    tail = reserve_ids[reserve_count:]
+    rng.shuffle(tail)
+    reserve_ids = head + tail
 
     _emit_progress(
         progress,

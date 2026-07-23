@@ -155,8 +155,9 @@ class LocalSearchConfig(BaseModel):
     max_iterations: int = 500
     max_wall_sec: float = 120.0
     max_seconds: float | None = None
+    # 1v1 is the useful default; 1v2/2v1 are combinatorial and wall-clock limited.
     swap_patterns: list[Literal["1v1", "1v2", "2v1"]] = Field(
-        default_factory=lambda: ["1v1", "1v2", "2v1"]
+        default_factory=lambda: ["1v1"]
     )
 
     @field_validator("max_iterations")

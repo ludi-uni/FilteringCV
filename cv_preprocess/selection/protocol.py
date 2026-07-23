@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from cv_preprocess.application.common import ProgressSink
+# Duck-typed; concrete ProgressEvent lives in application.common (avoid circular import).
+ProgressSink = Callable[[Any], None]
 
 
 @dataclass

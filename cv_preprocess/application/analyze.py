@@ -318,6 +318,27 @@ def analyze_project(
     if not _linguistic_module_available():
         warnings.append("linguistic features unavailable; phonemes from G2P only")
 
+    enhance = config.audio_pipeline_enhance
+    two_pass = config.two_pass_denoise.enabled
+    enhance_types = (
+        {str(getattr(step, "type", "")) for step in enhance.steps} if enhance is not None else set()
+    )
+    has_tts_restore = bool(enhance_types & {"sidon_restore", "denoise", "bandwidth_extension"})
+    if not two_pass or enhance is None or not has_tts_restore:
+        warnings.append(
+            "TTS enhance missing: set two_pass_denoise.enabled=true and "
+            "audio_pipeline_enhance with sidon_restore (see config/example.yaml). "
+            "Without this, audio_cache/wavs are near-raw decode only."
+        )
+    if "sidon_restore" in enhance_types:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            raise RuntimeError(
+                "audio_pipeline_enhance uses sidon_restore but torch is not installed. "
+                "Run: uv sync --extra sidon"
+            ) from None
+
     root = config.input.corpus_root
     loaded = load_clip_rows_for_pipeline(
         config,

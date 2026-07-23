@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import time
 from collections import Counter
 from itertools import combinations
@@ -13,13 +14,15 @@ from cv_preprocess.selection.constraints import (
 )
 from cv_preprocess.selection.protocol import ClipFeatures
 from cv_preprocess.selection.scoring import (
+    dedupe_clip_features,
     pool_counts_for_family,
+    precompute_family_score_tables,
+    score_clip_fast,
     speaker_counts_for_family,
-    total_selection_score,
 )
 
 
-ScoreFn = Callable[[ClipFeatures, ConstraintState], tuple[float, dict, dict]]
+ScoreFn = Callable[[ClipFeatures, ConstraintState], float]
 
 
 def _build_score_fn(
@@ -31,32 +34,41 @@ def _build_score_fn(
     min_utterances_by_family: dict[str, int],
     min_speakers_by_family: dict[str, int],
     current_counts_by_family: dict[str, Counter[str]],
+    target_tables: dict[str, dict[str, float]] | None = None,
+    features_cache: dict[str, dict[str, list[str]]] | None = None,
 ) -> ScoreFn:
-    pool_counts_by_family = {
-        family: pool_counts_for_family(candidates, family) for family in feature_weights
-    }
-    utterance_counts_by_family = {
-        family: pool_counts_for_family(candidates, family) for family in feature_weights
-    }
-    speaker_sets_by_family = {
-        family: speaker_counts_for_family(candidates, family) for family in feature_weights
-    }
+    if target_tables is None:
+        pool_counts_by_family = {
+            family: pool_counts_for_family(candidates, family) for family in feature_weights
+        }
+        target_tables = precompute_family_score_tables(
+            feature_weights=feature_weights,
+            temperatures=temperatures,
+            pool_counts_by_family=pool_counts_by_family,
+            utterance_counts_by_family=pool_counts_by_family,
+            speaker_sets_by_family={
+                family: speaker_counts_for_family(candidates, family) for family in feature_weights
+            },
+            min_utterances_by_family=min_utterances_by_family,
+            min_speakers_by_family=min_speakers_by_family,
+        )
 
-    def score(clip: ClipFeatures, state: ConstraintState) -> tuple[float, dict, dict]:
-        return total_selection_score(
+    quality_weight = feature_weights.get("quality", 0.0)
+    speaker_diversity_weight = feature_weights.get("speaker_diversity", 0.0)
+    if features_cache is None:
+        features_cache = {clip.clip_id: dedupe_clip_features(clip) for clip in candidates}
+
+    def score(clip: ClipFeatures, state: ConstraintState) -> float:
+        return score_clip_fast(
             clip,
             feature_weights=feature_weights,
             diminishing_tau=diminishing_tau,
-            temperatures=temperatures,
+            target_tables=target_tables or {},
             current_counts_by_family=current_counts_by_family,
-            pool_counts_by_family=pool_counts_by_family,
-            utterance_counts_by_family=utterance_counts_by_family,
-            speaker_sets_by_family=speaker_sets_by_family,
-            min_utterances_by_family=min_utterances_by_family,
-            min_speakers_by_family=min_speakers_by_family,
             selected_speakers=state.selected_speakers,
-            quality_weight=feature_weights.get("quality", 0.0),
-            speaker_diversity_weight=feature_weights.get("speaker_diversity", 0.0),
+            quality_weight=quality_weight,
+            speaker_diversity_weight=speaker_diversity_weight,
+            features_by_family=features_cache.get(clip.clip_id),
         )
 
     return score
@@ -67,16 +79,30 @@ def _evaluate_set(
     clips_by_id: dict[str, ClipFeatures],
     score_fn: ScoreFn,
     constraint_config: ConstraintConfig,
+    *,
+    feature_counts: dict[str, Counter[str]] | None = None,
+    features_cache: dict[str, dict[str, list[str]]] | None = None,
 ) -> tuple[float, ConstraintState]:
     state = ConstraintState()
+    if feature_counts is not None:
+        for counter in feature_counts.values():
+            counter.clear()
     total = 0.0
     for clip_id in selected:
         clip = clips_by_id[clip_id]
-        clip_score, _, _ = score_fn(clip, state)
-        total += clip_score
+        total += score_fn(clip, state)
         add_clip_to_state(clip, state, constraint_config)
+        if feature_counts is not None:
+            tokens_by_family = (
+                features_cache.get(clip_id, clip.features_by_family)
+                if features_cache is not None
+                else clip.features_by_family
+            )
+            for family, tokens in tokens_by_family.items():
+                bucket = feature_counts.setdefault(family, Counter())
+                for token in tokens:
+                    bucket[token] += 1
     return total, state
-
 
 def local_search_improve(
     selected: list[str],
@@ -95,18 +121,22 @@ def local_search_improve(
     max_wall_sec: float,
     progress: ProgressSink | None = None,
     progress_label: str | None = None,
+    target_tables: dict[str, dict[str, float]] | None = None,
+    seed: int = 0,
 ) -> tuple[list[str], list[str], int]:
     if not selected or not reserve:
         return selected, reserve, 0
 
-    current_counts_by_family: dict[str, Counter[str]] = {
-        family: Counter() for family in feature_weights
-    }
-    for clip_id in selected:
-        clip = clips_by_id[clip_id]
-        for family, tokens in clip.features_by_family.items():
-            for token in tokens:
-                current_counts_by_family.setdefault(family, Counter())[token] += 1
+    # Bound combinatorial explosion on large corpora.
+    selected_cap = 200
+    reserve_cap = 200
+    selected_work = list(selected[:selected_cap])
+    reserve_work = list(reserve[:reserve_cap])
+
+    features_cache = {clip.clip_id: dedupe_clip_features(clip) for clip in candidates}
+    # Mutable feature counts updated inside _evaluate_set so diminishing-returns
+    # scoring follows the trial selection order (same as greedy).
+    live_counts: dict[str, Counter[str]] = {family: Counter() for family in feature_weights}
 
     score_fn = _build_score_fn(
         feature_weights=feature_weights,
@@ -115,16 +145,36 @@ def local_search_improve(
         candidates=candidates,
         min_utterances_by_family=min_utterances_by_family,
         min_speakers_by_family=min_speakers_by_family,
-        current_counts_by_family=current_counts_by_family,
+        current_counts_by_family=live_counts,
+        target_tables=target_tables,
+        features_cache=features_cache,
     )
 
-    selected_set = list(selected)
-    reserve_set = list(reserve)
-    best_score, _ = _evaluate_set(selected_set, clips_by_id, score_fn, constraint_config)
+    selected_set = list(selected_work)
+    reserve_set = list(reserve_work)
+    best_score, _ = _evaluate_set(
+        selected_set,
+        clips_by_id,
+        score_fn,
+        constraint_config,
+        feature_counts=live_counts,
+        features_cache=features_cache,
+    )
     iterations = 0
     improvements = 0
     start = time.monotonic()
     last_progress_at = 0.0
+    rng = random.Random(seed)
+    # Cap pair evaluations per iteration; full cartesian is O(n^2) and can exceed wall
+    # before the outer loop ever checks time.
+    max_pair_checks = max(256, min(4000, selected_cap * 8))
+
+    patterns = set(swap_patterns)
+    # Expensive multi-swaps only briefly; prefer 1v1.
+    allow_expensive = ("1v2" in patterns or "2v1" in patterns) and improvements < 3
+
+    def timed_out() -> bool:
+        return (time.monotonic() - start) >= max_wall_sec
 
     def report(*, force: bool = False) -> None:
         nonlocal last_progress_at
@@ -164,19 +214,33 @@ def local_search_improve(
 
     report(force=True)
 
-    patterns = set(swap_patterns)
-    while iterations < max_iterations and (time.monotonic() - start) < max_wall_sec:
+    while iterations < max_iterations and not timed_out():
         improved = False
         iterations += 1
+        checks = 0
 
         if "1v1" in patterns:
-            for out_id in selected_set:
-                for in_id in reserve_set:
+            out_order = list(selected_set)
+            in_order = list(reserve_set)
+            rng.shuffle(out_order)
+            rng.shuffle(in_order)
+            for out_id in out_order:
+                if timed_out():
+                    break
+                for in_id in in_order:
+                    if timed_out() or checks >= max_pair_checks:
+                        break
                     if out_id == in_id:
                         continue
+                    checks += 1
                     trial_selected = [cid for cid in selected_set if cid != out_id] + [in_id]
                     trial_score, _ = _evaluate_set(
-                        trial_selected, clips_by_id, score_fn, constraint_config
+                        trial_selected,
+                        clips_by_id,
+                        score_fn,
+                        constraint_config,
+                        feature_counts=live_counts,
+                        features_cache=features_cache,
                     )
                     if trial_score > best_score + 1e-12:
                         selected_set = trial_selected
@@ -185,20 +249,35 @@ def local_search_improve(
                         improved = True
                         improvements += 1
                         break
-                if improved:
+                if improved or timed_out() or checks >= max_pair_checks:
                     break
         if improved:
             report()
             continue
+        if timed_out():
+            break
 
-        if "1v2" in patterns:
-            for out_id in selected_set:
-                for in_a, in_b in combinations(reserve_set, 2):
-                    trial_selected = [
-                        cid for cid in selected_set if cid != out_id
-                    ] + [in_a, in_b]
+        allow_expensive = ("1v2" in patterns or "2v1" in patterns) and improvements < 3
+        if allow_expensive and "1v2" in patterns and len(reserve_set) >= 2:
+            out_order = list(selected_set)
+            rng.shuffle(out_order)
+            for out_id in out_order:
+                if timed_out() or checks >= max_pair_checks:
+                    break
+                pairs = list(combinations(reserve_set, 2))
+                rng.shuffle(pairs)
+                for in_a, in_b in pairs:
+                    if timed_out() or checks >= max_pair_checks:
+                        break
+                    checks += 1
+                    trial_selected = [cid for cid in selected_set if cid != out_id] + [in_a, in_b]
                     trial_score, _ = _evaluate_set(
-                        trial_selected, clips_by_id, score_fn, constraint_config
+                        trial_selected,
+                        clips_by_id,
+                        score_fn,
+                        constraint_config,
+                        feature_counts=live_counts,
+                        features_cache=features_cache,
                     )
                     if trial_score > best_score + 1e-12:
                         selected_set = trial_selected
@@ -214,17 +293,33 @@ def local_search_improve(
         if improved:
             report()
             continue
+        if timed_out():
+            break
 
-        if "2v1" in patterns:
-            for out_a, out_b in combinations(selected_set, 2):
-                for in_id in reserve_set:
+        if allow_expensive and "2v1" in patterns and len(selected_set) >= 2:
+            out_pairs = list(combinations(selected_set, 2))
+            rng.shuffle(out_pairs)
+            in_order = list(reserve_set)
+            rng.shuffle(in_order)
+            for out_a, out_b in out_pairs:
+                if timed_out() or checks >= max_pair_checks:
+                    break
+                for in_id in in_order:
+                    if timed_out() or checks >= max_pair_checks:
+                        break
+                    checks += 1
                     trial_selected = [
                         cid for cid in selected_set if cid not in {out_a, out_b}
                     ] + [in_id]
                     if len(trial_selected) != len(selected_set) - 1:
                         continue
                     trial_score, _ = _evaluate_set(
-                        trial_selected, clips_by_id, score_fn, constraint_config
+                        trial_selected,
+                        clips_by_id,
+                        score_fn,
+                        constraint_config,
+                        feature_counts=live_counts,
+                        features_cache=features_cache,
                     )
                     if trial_score > best_score + 1e-12:
                         selected_set = trial_selected
@@ -244,4 +339,13 @@ def local_search_improve(
             break
 
     report(force=True)
-    return selected_set, reserve_set, iterations
+
+    # Reconcile with full selected/reserve lists outside the capped working sets.
+    selected_tail = [cid for cid in selected if cid not in set(selected_work)]
+    reserve_tail = [cid for cid in reserve if cid not in set(reserve_work)]
+    final_selected = selected_set + selected_tail
+    moved = set(selected_set) | set(reserve_set)
+    final_reserve = [cid for cid in reserve_set if cid not in set(selected_set)] + [
+        cid for cid in reserve_tail if cid not in moved and cid not in set(selected_set)
+    ]
+    return final_selected, final_reserve, iterations

@@ -13,6 +13,7 @@ from cv_preprocess.catalog import CatalogRef
 from cv_preprocess.catalog.models import ClipDisposition
 from cv_preprocess.catalog.reader import read_clips
 from cv_preprocess.config import PipelineConfig
+from cv_preprocess.pipeline.ljspeech_tsv import write_ljspeech_validated_tsv
 
 
 def resolve_materialize_output_root(config: PipelineConfig) -> Path:
@@ -144,6 +145,30 @@ def _copy_or_link_file(src: Path, dst: Path, mode: str) -> None:
         shutil.copy2(src, dst)
 
 
+def _write_ljspeech_metadata_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    """Classic LJSpeech metadata.csv: ``utt_id|text_raw|text_norm`` (no header)."""
+    path = Path(path)
+    partial = path.with_suffix(path.suffix + ".partial")
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    with partial.open("w", encoding="utf-8", newline="") as handle:
+        for row in rows:
+            utt_id = str(row.get("utt_id") or row.get("clip_id") or "")
+            text_norm = row.get("text_norm")
+            if not utt_id or text_norm is None:
+                raise ValueError(
+                    "LJSpeech metadata row requires utt_id/clip_id and text_norm "
+                    f"(got keys: {sorted(row.keys())})"
+                )
+            text_raw = row.get("text_raw")
+            if text_raw is None:
+                text_raw = text_norm
+            # Pipe delimiter; strip pipes/newlines from text to keep one field per column.
+            safe_raw = str(text_raw).replace("|", " ").replace("\n", " ").replace("\r", " ")
+            safe_norm = str(text_norm).replace("|", " ").replace("\n", " ").replace("\r", " ")
+            handle.write(f"{utt_id}|{safe_raw}|{safe_norm}\n")
+    partial.replace(path)
+
+
 def materialize_dataset(
     config: PipelineConfig,
     catalog: CatalogRef,
@@ -235,10 +260,23 @@ def materialize_dataset(
     _write_jsonl_atomic(metadata_path, metadata_rows)
     manifest_paths.append(str(metadata_path))
 
+    # LJSpeech / VITS-style filelists (same layout as legacy preprocess).
+    validated_tsv_name = config.output.validated_tsv or "validated.tsv"
+    validated_tsv_path = staging_root / validated_tsv_name
+    write_ljspeech_validated_tsv(validated_tsv_path, metadata_rows)
+    manifest_paths.append(str(validated_tsv_path))
+
+    metadata_csv_path = staging_root / "metadata.csv"
+    _write_ljspeech_metadata_csv(metadata_csv_path, metadata_rows)
+    manifest_paths.append(str(metadata_csv_path))
+
     for split_name, rows in split_rows.items():
         split_path = staging_root / f"{split_name}.jsonl"
         _write_jsonl_atomic(split_path, rows)
         manifest_paths.append(str(split_path))
+        split_tsv_path = staging_root / f"{split_name}.tsv"
+        write_ljspeech_validated_tsv(split_tsv_path, rows)
+        manifest_paths.append(str(split_tsv_path))
 
     plans_dir = staging_root / "plans"
     plans_dir.mkdir(parents=True, exist_ok=True)
