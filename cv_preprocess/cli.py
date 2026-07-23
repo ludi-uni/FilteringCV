@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from typing import cast
 
 import typer
 
 from cv_preprocess.application.analyze import analyze_project
+from cv_preprocess.application.audit import audit_dataset
+from cv_preprocess.application.build import build_dataset
+from cv_preprocess.application.materialize import materialize_dataset
 from cv_preprocess.application.select import select_dataset
+from cv_preprocess.application.split import load_split_plan, plan_dataset_split
 from cv_preprocess.catalog.reader import load_catalog
 from cv_preprocess.config import load_config
+from cv_preprocess.reports.comparison import compare_runs
 from cv_preprocess.pipeline.dataset_partition import run_dataset_partition, validate_group_by
 from cv_preprocess.pipeline.ljspeech_tsv import metadata_jsonl_to_validated_tsv
 from cv_preprocess.pipeline.preprocess import run_preprocess
@@ -47,6 +53,36 @@ def cmd_analyze(
                 "eligible_count": result.eligible_count,
                 "hard_rejected_count": result.hard_rejected_count,
                 "warnings": result.warnings,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+@app.command("plan-split")
+def cmd_plan_split(
+    config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+) -> None:
+    """Dataset builder plan-split: assign speakers/clips to train/val/test splits."""
+    from cv_preprocess.application.split import plan_dataset_split
+
+    cfg = load_config(config)
+    work_dir = cfg.dataset_builder.work_dir
+    catalog = load_catalog(work_dir)
+    if catalog.clips_path is None:
+        raise typer.BadParameter(f"catalog not found under {work_dir / 'catalog'}")
+    result = plan_dataset_split(cfg, catalog)
+    typer.echo(
+        json.dumps(
+            {
+                "catalog": result.catalog.model_dump(mode="json"),
+                "protocol": result.protocol,
+                "ratios": result.ratios,
+                "speaker_assignments": result.speaker_assignments,
+                "clip_assignments": result.clip_assignments,
+                "warnings": result.warnings,
+                "plan_path": str(result.plan_path) if result.plan_path else None,
             },
             ensure_ascii=False,
             indent=2,

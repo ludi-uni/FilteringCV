@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from cv_preprocess.catalog import CatalogRef
 
@@ -65,7 +65,20 @@ class AnalyzeResult(BaseModel):
 class SplitPlan(BaseModel):
     catalog: CatalogRef
     protocol: str
+    speaker_assignments: dict[str, str] = Field(default_factory=dict)
+    clip_assignments: dict[str, str] = Field(default_factory=dict)
     assignments: dict[str, str] = Field(default_factory=dict)
+    ratios: dict[str, float] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    plan_path: Path | None = None
+
+    @model_validator(mode="after")
+    def sync_assignment_aliases(self) -> SplitPlan:
+        if self.clip_assignments and not self.assignments:
+            object.__setattr__(self, "assignments", dict(self.clip_assignments))
+        elif self.assignments and not self.clip_assignments:
+            object.__setattr__(self, "clip_assignments", dict(self.assignments))
+        return self
 
 
 class SelectionPlan(BaseModel):

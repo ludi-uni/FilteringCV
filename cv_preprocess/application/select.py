@@ -7,14 +7,16 @@ from typing import Any
 import polars as pl
 
 from cv_preprocess.application.common import ProgressEvent, ProgressSink, SelectionPlan, SplitPlan
+from cv_preprocess.application.split import finalize_clip_splits
 from cv_preprocess.catalog import CatalogRef
 from cv_preprocess.catalog.models import ClipDisposition
 from cv_preprocess.catalog.reader import read_clips
 from cv_preprocess.config import PipelineConfig
 from cv_preprocess.linguistic.features import FeatureSource, extract_linguistic_features
 from cv_preprocess.selection.overrides import load_overrides, resolved_overrides_path
-from cv_preprocess.selection.protocol import ClipFeatures, SelectionBackend
+from cv_preprocess.selection.protocol import ClipFeatures, SelectionBackend, SelectionResult
 from cv_preprocess.selection.python_backend import PythonSelectionBackend
+from cv_preprocess.split.protocol import SPLIT_ORDER, SplitProtocol
 
 
 def _atomic_write_parquet(path: Path, df: pl.DataFrame) -> None:
@@ -136,6 +138,62 @@ def _resolve_backend(
     raise ValueError(f"unsupported selection backend: {requested!r}")
 
 
+def _run_selection(
+    selection_backend: SelectionBackend,
+    candidates: list[ClipFeatures],
+    *,
+    config: PipelineConfig,
+    split_plan: SplitPlan | None,
+    target_duration_sec: float,
+    tolerance_ratio: float,
+) -> SelectionResult:
+    protocol = SplitProtocol(config.dataset_builder.split.protocol)
+    if (
+        protocol == SplitProtocol.UNSEEN_SPEAKER
+        and split_plan is not None
+        and split_plan.speaker_assignments
+    ):
+        ratios = config.dataset_builder.split.resolved_ratios()
+        by_split: dict[str, list[ClipFeatures]] = {name: [] for name in SPLIT_ORDER}
+        for clip in candidates:
+            split_name = split_plan.speaker_assignments.get(clip.speaker_id)
+            if split_name:
+                clip.split = split_name
+                by_split.setdefault(split_name, []).append(clip)
+
+        selected_ids: list[str] = []
+        reserve_ids: list[str] = []
+        explanations: dict[str, Any] = {}
+        for split_name in SPLIT_ORDER:
+            split_candidates = by_split.get(split_name, [])
+            if not split_candidates:
+                continue
+            split_target = target_duration_sec * ratios.get(split_name, 0.0)
+            if split_target <= 0.0:
+                continue
+            split_result = selection_backend.select(
+                split_candidates,
+                target_duration_sec=split_target,
+                tolerance_ratio=tolerance_ratio,
+                seed=config.dataset_builder.random_seed,
+            )
+            selected_ids.extend(split_result.selected_ids)
+            reserve_ids.extend(split_result.reserve_ids)
+            explanations.update(split_result.explanations)
+        return SelectionResult(
+            selected_ids=selected_ids,
+            reserve_ids=reserve_ids,
+            explanations=explanations,
+        )
+
+    return selection_backend.select(
+        candidates,
+        target_duration_sec=target_duration_sec,
+        tolerance_ratio=tolerance_ratio,
+        seed=config.dataset_builder.random_seed,
+    )
+
+
 def write_selection_plan_parquet(
     path: Path,
     *,
@@ -215,21 +273,28 @@ def select_dataset(
     selection_backend = _resolve_backend(config, backend)
     target_duration_sec = _resolved_target_duration_sec(config)
     tolerance_ratio = config.dataset_builder.selection.duration.tolerance_ratio
-    result = selection_backend.select(
+    result = _run_selection(
+        selection_backend,
         candidates,
+        config=config,
+        split_plan=split_plan,
         target_duration_sec=target_duration_sec,
         tolerance_ratio=tolerance_ratio,
-        seed=config.dataset_builder.random_seed,
     )
 
-    if split_plan is None or not split_plan.assignments:
+    if split_plan is None:
         placeholder_split = SplitPlan(
             catalog=catalog,
             protocol=config.dataset_builder.split.protocol,
-            assignments={clip_id: "train" for clip_id in result.selected_ids},
+            ratios=config.dataset_builder.split.resolved_ratios(),
         )
     else:
-        placeholder_split = split_plan
+        placeholder_split = finalize_clip_splits(
+            config,
+            split_plan,
+            result.selected_ids,
+            clips_df=clips_df,
+        )
 
     plans_dir = Path(catalog.work_dir) / "plans"
     plan_path = plans_dir / "selection_plan.parquet"

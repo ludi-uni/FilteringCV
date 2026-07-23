@@ -10,15 +10,84 @@ class ComputeConfig(BaseModel):
     backend: Literal["auto", "polars", "python"] = "auto"
 
 
+class SplitRatiosConfig(BaseModel):
+    train: float = 0.9
+    validation: float | None = None
+    val: float = 0.05
+    test: float = 0.05
+
+    @field_validator("train", "validation", "val", "test")
+    @classmethod
+    def non_negative_ratios(cls, value: float | None) -> float | None:
+        if value is not None and (value < 0 or value > 1):
+            raise ValueError("split ratios must be in [0, 1]")
+        return value
+
+    @model_validator(mode="after")
+    def resolve_validation_alias(self) -> SplitRatiosConfig:
+        if self.validation is not None:
+            object.__setattr__(self, "val", self.validation)
+        return self
+
+    @model_validator(mode="after")
+    def ratios_sum_to_one(self) -> SplitRatiosConfig:
+        total = self.train + self.val + self.test
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(f"split ratios must equal 1.0, got {total}")
+        return self
+
+    def as_dict(self) -> dict[str, float]:
+        return {"train": self.train, "val": self.val, "test": self.test}
+
+
+class PreserveTrainConfig(BaseModel):
+    enabled: bool = True
+    critical_feature_max_speakers: int = 2
+    min_train_occurrences: int = 1
+
+    @field_validator("critical_feature_max_speakers", "min_train_occurrences")
+    @classmethod
+    def non_negative_counts(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("preserve_train counts must be >= 0")
+        return value
+
+
+class LeakagePolicyConfig(BaseModel):
+    speaker: Literal["forbid", "forbid_for_test", "allow"] = "forbid"
+    audio_hash: Literal["forbid", "forbid_for_test", "allow"] = "forbid"
+    sentence_id: Literal["forbid", "forbid_for_test", "allow"] = "forbid_for_test"
+    normalized_text: Literal["forbid", "forbid_for_test", "allow"] = "forbid_for_test"
+
+
+class SplitOptimizerConfig(BaseModel):
+    backend: Literal["auto", "greedy_local_search", "ortools"] = "auto"
+    time_limit_sec: float = 120.0
+    fallback: Literal["greedy_local_search"] = "greedy_local_search"
+
+    @field_validator("time_limit_sec")
+    @classmethod
+    def non_negative_time_limit(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("split.optimizer.time_limit_sec must be >= 0")
+        return value
+
+
 class DatasetBuilderSplitConfig(BaseModel):
     protocol: Literal["unseen_speaker", "seen_speaker", "single_speaker"] = "unseen_speaker"
+    ratios: SplitRatiosConfig | None = None
     train: float = 0.9
     val: float = 0.05
     test: float = 0.05
     seed: int = 42
-    preserve_train: bool = True
-    leakage_policy: Literal["strict", "warn", "off"] = "strict"
-    optimizer: Literal["auto", "greedy_local_search", "ortools"] = "auto"
+    preserve_train: PreserveTrainConfig | bool = Field(default_factory=PreserveTrainConfig)
+    objectives: dict[str, float] = Field(default_factory=dict)
+    leakage_policy: LeakagePolicyConfig | Literal["strict", "warn", "off"] = Field(
+        default_factory=LeakagePolicyConfig
+    )
+    optimizer: SplitOptimizerConfig | Literal["auto", "greedy_local_search", "ortools"] = Field(
+        default_factory=SplitOptimizerConfig
+    )
 
     @field_validator("train", "val", "test")
     @classmethod
@@ -27,6 +96,38 @@ class DatasetBuilderSplitConfig(BaseModel):
             raise ValueError("split ratios must be in [0, 1]")
         return value
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_nested_aliases(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        if "preserve_train" in data and isinstance(data["preserve_train"], bool):
+            data["preserve_train"] = {"enabled": data["preserve_train"]}
+        if "leakage_policy" in data and isinstance(data["leakage_policy"], str):
+            legacy = data["leakage_policy"]
+            if legacy == "strict":
+                data["leakage_policy"] = LeakagePolicyConfig().model_dump()
+            elif legacy == "warn":
+                data["leakage_policy"] = LeakagePolicyConfig().model_dump()
+            elif legacy == "off":
+                data["leakage_policy"] = LeakagePolicyConfig(
+                    speaker="allow",
+                    audio_hash="allow",
+                    sentence_id="allow",
+                    normalized_text="allow",
+                ).model_dump()
+        if "optimizer" in data and isinstance(data["optimizer"], str):
+            data["optimizer"] = {"backend": data["optimizer"]}
+        return data
+
+    @model_validator(mode="after")
+    def resolve_ratio_aliases(self) -> DatasetBuilderSplitConfig:
+        if self.ratios is not None:
+            object.__setattr__(self, "train", self.ratios.train)
+            object.__setattr__(self, "val", self.ratios.val)
+            object.__setattr__(self, "test", self.ratios.test)
+        return self
+
     @model_validator(mode="after")
     def ratios_sum_to_one(self) -> DatasetBuilderSplitConfig:
         total = self.train + self.val + self.test
@@ -34,6 +135,20 @@ class DatasetBuilderSplitConfig(BaseModel):
             raise ValueError(f"split.train + val + test must equal 1.0, got {total}")
         return self
 
+    def resolved_ratios(self) -> dict[str, float]:
+        if self.ratios is not None:
+            return self.ratios.as_dict()
+        return {"train": self.train, "val": self.val, "test": self.test}
+
+    def resolved_preserve_train(self) -> PreserveTrainConfig:
+        if isinstance(self.preserve_train, PreserveTrainConfig):
+            return self.preserve_train
+        return PreserveTrainConfig(enabled=bool(self.preserve_train))
+
+    def resolved_optimizer(self) -> SplitOptimizerConfig:
+        if isinstance(self.optimizer, SplitOptimizerConfig):
+            return self.optimizer
+        return SplitOptimizerConfig(backend=self.optimizer)
 
 class LocalSearchConfig(BaseModel):
     enabled: bool = True
@@ -243,6 +358,13 @@ class FeatureSupportConfig(BaseModel):
         return value
 
 
+class LeakagePolicyConfig(BaseModel):
+    speaker: Literal["forbid", "forbid_for_test", "allow"] = "forbid"
+    audio_hash: Literal["forbid", "forbid_for_test", "allow"] = "forbid"
+    sentence_id: Literal["forbid", "forbid_for_test", "allow"] = "forbid_for_test"
+    normalized_text: Literal["forbid", "forbid_for_test", "allow"] = "forbid_for_test"
+
+
 class MaterializeConfig(BaseModel):
     mode: Literal["copy", "hardlink", "symlink"] = "copy"
     output_root: Path | None = None
@@ -253,6 +375,7 @@ class MaterializeConfig(BaseModel):
 class DatasetBuilderConfig(BaseModel):
     enabled: bool = False
     work_dir: Path = Path("work")
+    output_dir: Path | None = None
     target_duration_hours: float | None = None
     random_seed: int = 42
     split: DatasetBuilderSplitConfig = Field(default_factory=DatasetBuilderSplitConfig)
