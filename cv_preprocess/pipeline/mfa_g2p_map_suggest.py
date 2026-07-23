@@ -13,10 +13,6 @@ from cv_preprocess.config import PipelineConfig
 from cv_preprocess.io.tsv_loader import load_clip_rows_for_pipeline
 from cv_preprocess.pipeline.g2p_map_suggest_core import (
     Strategy,
-    _collect_votes_for_row,
-    _g2p_tokens,
-    _pairs_proportional,
-    _pairs_zip,
     accumulate_pairs_vote,
     finalize_and_write_g2p_map_draft,
     new_mfa_g2p_map_suggest_counts,

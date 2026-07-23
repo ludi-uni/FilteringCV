@@ -14,3 +14,5 @@ CommonVoice
 
 default.yaml
 data/
+
+frontend/node_modules/

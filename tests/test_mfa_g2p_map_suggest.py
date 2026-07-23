@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from cv_preprocess.pipeline.mfa_g2p_map_suggest import (
+from cv_preprocess.pipeline.g2p_map_suggest_core import (
     _collect_votes_for_row,
     _pairs_proportional,
     _pairs_zip,

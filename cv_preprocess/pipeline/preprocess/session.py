@@ -161,7 +161,6 @@ class PreprocessSession(PreprocessRowMixin, PreprocessFlushMixin, PreprocessRepo
     def run(self) -> dict:
         cfg = self.cfg
         rows = self.rows
-        root = self.root
         out_root = self.out_root
         accepted = self.accepted
 

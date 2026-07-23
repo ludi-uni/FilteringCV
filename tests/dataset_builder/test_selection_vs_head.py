@@ -5,7 +5,6 @@ from pathlib import Path
 
 from cv_preprocess.application.common import SplitPlan
 from cv_preprocess.application.select import select_dataset
-from cv_preprocess.selection.python_backend import greedy_local_search
 
 from tests.dataset_builder.conftest_helpers import make_synthetic_catalog, selection_pipeline_config
 
@@ -107,13 +106,6 @@ def test_greedy_at_least_random_with_margin(tmp_path: Path) -> None:
     rng = random.Random(config.dataset_builder.random_seed)
     shuffled = candidates[:]
     rng.shuffle(shuffled)
-    random_pick = greedy_local_search(
-        shuffled,
-        config=config.dataset_builder,
-        target_duration_sec=0.003 * 3600.0,
-        tolerance_ratio=0.5,
-        seed=config.dataset_builder.random_seed,
-    )
     # emulate random by taking first feasible clips until duration target
     random_ids: list[str] = []
     duration = 0.0

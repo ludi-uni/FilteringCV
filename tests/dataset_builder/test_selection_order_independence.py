@@ -49,7 +49,6 @@ def _clip_features(rows: list[dict], config) -> list[ClipFeatures]:
     from cv_preprocess.application.select import _clip_features_from_catalog
     import polars as pl
 
-    from cv_preprocess.catalog.writer import write_clips_parquet
 
     df = pl.DataFrame(
         [
