@@ -14,6 +14,7 @@ from cv_preprocess.web.routes import (
     audio,
     catalog,
     compare,
+    config_api,
     dashboard,
     jobs,
     overrides,
@@ -56,6 +57,7 @@ def create_app(config_path: Path, project_root: Path) -> FastAPI:
     app.include_router(overrides.router, prefix="/api/overrides", tags=["overrides"])
     app.include_router(compare.router, prefix="/api/compare", tags=["compare"])
     app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
+    app.include_router(config_api.router, prefix="/api/config", tags=["config"])
 
     ws_router = create_websocket_router(progress_hub, app_state.job_store)
     app.include_router(ws_router)

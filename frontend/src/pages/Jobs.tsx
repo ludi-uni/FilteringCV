@@ -78,6 +78,37 @@ export function Jobs() {
         ? Math.round((latest.current / latest.total) * 100)
         : null;
 
+  const phase =
+    latest?.metadata && typeof latest.metadata.phase === "string"
+      ? String(latest.metadata.phase)
+      : null;
+
+  const selectedCount =
+    latest?.metadata && typeof latest.metadata.selected === "number"
+      ? Number(latest.metadata.selected)
+      : null;
+
+  const durationSec =
+    latest?.metadata && typeof latest.metadata.duration_sec === "number"
+      ? Number(latest.metadata.duration_sec)
+      : null;
+
+  const targetDurationSec =
+    latest?.metadata && typeof latest.metadata.target_duration_sec === "number"
+      ? Number(latest.metadata.target_duration_sec)
+      : null;
+
+  const lastUpdatedLabel = latest?.created_at
+    ? `updated ${new Date(latest.created_at).toLocaleTimeString()}`
+    : null;
+
+  const showIndeterminate =
+    selectedId != null &&
+    !terminalStatus &&
+    connected &&
+    progressPct == null &&
+    messages.length > 0;
+
   return (
     <div>
       <header className="page-header">
@@ -194,14 +225,40 @@ export function Jobs() {
             </p>
             {latest && (
               <div style={{ marginBottom: "0.75rem" }}>
-                <strong>{latest.stage}</strong>
-                {latest.message && <span> — {latest.message}</span>}
-                {progressPct != null && (
+                <div className="progress-meta">
+                  <strong>{latest.stage}</strong>
+                  {phase && <span className="pill">{phase}</span>}
+                  {latest.message && <span> — {latest.message}</span>}
+                </div>
+                {(progressPct != null || showIndeterminate) && (
                   <>
-                    <div className="progress-bar">
-                      <div className="progress-bar-fill" style={{ width: `${progressPct}%` }} />
+                    <div className={`progress-bar${showIndeterminate ? " indeterminate" : ""}`}>
+                      <div
+                        className="progress-bar-fill"
+                        style={
+                          progressPct != null
+                            ? { width: `${progressPct}%` }
+                            : undefined
+                        }
+                      />
                     </div>
-                    <small style={{ color: "var(--text-muted)" }}>{progressPct}%</small>
+                    <div className="progress-stats">
+                      {progressPct != null && <span>{progressPct}%</span>}
+                      {latest.current != null && latest.total != null && (
+                        <span>
+                          {latest.current.toLocaleString()} / {latest.total.toLocaleString()}
+                        </span>
+                      )}
+                      {selectedCount != null && <span>selected={selectedCount}</span>}
+                      {durationSec != null && targetDurationSec != null && (
+                        <span>
+                          {(durationSec / 3600).toFixed(3)}h / {(targetDurationSec / 3600).toFixed(2)}h
+                        </span>
+                      )}
+                      {lastUpdatedLabel && (
+                        <span style={{ color: "var(--text-muted)" }}>{lastUpdatedLabel}</span>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
@@ -221,7 +278,14 @@ export function Jobs() {
                       {new Date(m.created_at).toLocaleTimeString()}
                     </span>{" "}
                     [{m.stage}] {m.message}
-                    {m.fraction != null && ` (${Math.round(m.fraction * 100)}%)`}
+                    {m.current != null && m.total != null
+                      ? ` (${m.current}/${m.total}`
+                      : ""}
+                    {m.fraction != null
+                      ? `${m.current != null && m.total != null ? ", " : " ("}${Math.round(m.fraction * 100)}%)`
+                      : m.current != null && m.total != null
+                        ? ")"
+                        : ""}
                   </div>
                 ))
               )}

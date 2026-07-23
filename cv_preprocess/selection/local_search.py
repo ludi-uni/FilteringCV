@@ -5,6 +5,7 @@ from collections import Counter
 from itertools import combinations
 from typing import Callable
 
+from cv_preprocess.application.common import ProgressEvent, ProgressSink
 from cv_preprocess.selection.constraints import (
     ConstraintConfig,
     ConstraintState,
@@ -92,6 +93,8 @@ def local_search_improve(
     swap_patterns: list[str],
     max_iterations: int,
     max_wall_sec: float,
+    progress: ProgressSink | None = None,
+    progress_label: str | None = None,
 ) -> tuple[list[str], list[str], int]:
     if not selected or not reserve:
         return selected, reserve, 0
@@ -119,7 +122,47 @@ def local_search_improve(
     reserve_set = list(reserve)
     best_score, _ = _evaluate_set(selected_set, clips_by_id, score_fn, constraint_config)
     iterations = 0
+    improvements = 0
     start = time.monotonic()
+    last_progress_at = 0.0
+
+    def report(*, force: bool = False) -> None:
+        nonlocal last_progress_at
+        now = time.monotonic()
+        if not force and (now - last_progress_at) < 0.5:
+            return
+        last_progress_at = now
+        if progress is None:
+            return
+        elapsed = now - start
+        iter_frac = iterations / max_iterations if max_iterations > 0 else 0.0
+        time_frac = elapsed / max_wall_sec if max_wall_sec > 0 else 0.0
+        local_frac = max(iter_frac, time_frac)
+        message = (
+            f"local_search iter={iterations}/{max_iterations} "
+            f"improvements={improvements} elapsed={elapsed:.1f}s/{max_wall_sec:.0f}s"
+        )
+        if progress_label:
+            message = f"[{progress_label}] {message}"
+        progress(
+            ProgressEvent(
+                stage="select",
+                message=message,
+                current=iterations,
+                total=max_iterations,
+                fraction=0.82 + 0.16 * min(1.0, local_frac),
+                metadata={
+                    "phase": "local_search",
+                    "iterations": iterations,
+                    "improvements": improvements,
+                    "elapsed_sec": elapsed,
+                    "max_wall_sec": max_wall_sec,
+                    "label": progress_label,
+                },
+            )
+        )
+
+    report(force=True)
 
     patterns = set(swap_patterns)
     while iterations < max_iterations and (time.monotonic() - start) < max_wall_sec:
@@ -140,10 +183,12 @@ def local_search_improve(
                         reserve_set = [cid for cid in reserve_set if cid != in_id] + [out_id]
                         best_score = trial_score
                         improved = True
+                        improvements += 1
                         break
                 if improved:
                     break
         if improved:
+            report()
             continue
 
         if "1v2" in patterns:
@@ -162,10 +207,12 @@ def local_search_improve(
                         ] + [out_id]
                         best_score = trial_score
                         improved = True
+                        improvements += 1
                         break
                 if improved:
                     break
         if improved:
+            report()
             continue
 
         if "2v1" in patterns:
@@ -187,11 +234,14 @@ def local_search_improve(
                         ]
                         best_score = trial_score
                         improved = True
+                        improvements += 1
                         break
                 if improved:
                     break
 
+        report()
         if not improved:
             break
 
+    report(force=True)
     return selected_set, reserve_set, iterations

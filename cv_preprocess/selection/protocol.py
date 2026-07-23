@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from cv_preprocess.application.common import ProgressSink
+
 
 @dataclass
 class ClipFeatures:
@@ -45,4 +47,6 @@ class SelectionBackend(Protocol):
         target_duration_sec: float,
         tolerance_ratio: float,
         seed: int,
+        progress: ProgressSink | None = None,
+        progress_label: str | None = None,
     ) -> SelectionResult: ...

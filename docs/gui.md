@@ -30,10 +30,11 @@ cv-preprocess gui -c config/my_builder.yaml
 
 Default bind: `127.0.0.1:8765` (localhost only).
 
-## Screens (planned / in progress)
+## Screens
 
 - **Dashboard** — recent runs and stage status
-- **Jobs** — queued/running/completed jobs with cancel
+- **Jobs** — queued/running/completed jobs with cancel and live progress
+- **Config** — edit the loaded YAML in Form or YAML mode; **Save & overwrite YAML** writes back to the original config path after Pydantic validation. Search and chips (Filters / Builder / Audio / Gates / Changed) help focus speaker filters and related settings
 - **Coverage** — feature distribution vs pool target
 - **Clips** — paginated catalog browser with audio preview
 - **Run Comparison** — diff two `work/` or output directories

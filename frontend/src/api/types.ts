@@ -151,6 +151,36 @@ export interface CompareResult {
   };
 }
 
+export interface ConfigSection {
+  id: string;
+  label: string;
+  group: string;
+}
+
+export interface ConfigResponse {
+  path: string;
+  relative_path: string;
+  yaml_text: string;
+  data: Record<string, unknown>;
+  sections: ConfigSection[];
+  json_schema: Record<string, unknown>;
+}
+
+export interface ConfigValidateResponse {
+  ok: boolean;
+  data?: Record<string, unknown> | null;
+  yaml_text?: string | null;
+  errors: string[];
+}
+
+export interface ConfigSaveResponse {
+  ok: boolean;
+  path: string;
+  data: Record<string, unknown>;
+  yaml_text: string;
+  message: string;
+}
+
 export const JOB_TYPES: JobType[] = [
   "scan",
   "analyze",

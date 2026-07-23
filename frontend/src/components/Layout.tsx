@@ -4,6 +4,7 @@ import styles from "./Layout.module.css";
 const NAV: Array<{ to: string; label: string; end?: boolean }> = [
   { to: "/", label: "Dashboard", end: true },
   { to: "/jobs", label: "Jobs" },
+  { to: "/config", label: "Config" },
   { to: "/coverage", label: "Coverage" },
   { to: "/clips", label: "Clips" },
   { to: "/compare", label: "Compare" },

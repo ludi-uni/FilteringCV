@@ -146,6 +146,7 @@ def _run_selection(
     split_plan: SplitPlan | None,
     target_duration_sec: float,
     tolerance_ratio: float,
+    progress: ProgressSink | None = None,
 ) -> SelectionResult:
     protocol = SplitProtocol(config.dataset_builder.split.protocol)
     if (
@@ -164,18 +165,35 @@ def _run_selection(
         selected_ids: list[str] = []
         reserve_ids: list[str] = []
         explanations: dict[str, Any] = {}
-        for split_name in SPLIT_ORDER:
+        active_splits = [
+            name
+            for name in SPLIT_ORDER
+            if by_split.get(name) and ratios.get(name, 0.0) > 0.0
+        ]
+        for split_idx, split_name in enumerate(active_splits, start=1):
             split_candidates = by_split.get(split_name, [])
-            if not split_candidates:
-                continue
             split_target = target_duration_sec * ratios.get(split_name, 0.0)
-            if split_target <= 0.0:
-                continue
+            if progress is not None:
+                progress(
+                    ProgressEvent(
+                        stage="select",
+                        message=(
+                            f"split {split_name} ({split_idx}/{len(active_splits)}): "
+                            f"{len(split_candidates)} candidates"
+                        ),
+                        current=split_idx - 1,
+                        total=len(active_splits),
+                        fraction=(split_idx - 1) / max(len(active_splits), 1),
+                        metadata={"phase": "split", "split": split_name},
+                    )
+                )
             split_result = selection_backend.select(
                 split_candidates,
                 target_duration_sec=split_target,
                 tolerance_ratio=tolerance_ratio,
                 seed=config.dataset_builder.random_seed,
+                progress=progress,
+                progress_label=split_name,
             )
             selected_ids.extend(split_result.selected_ids)
             reserve_ids.extend(split_result.reserve_ids)
@@ -191,6 +209,7 @@ def _run_selection(
         target_duration_sec=target_duration_sec,
         tolerance_ratio=tolerance_ratio,
         seed=config.dataset_builder.random_seed,
+        progress=progress,
     )
 
 
@@ -270,19 +289,35 @@ def select_dataset(
             ProgressEvent(
                 stage="select",
                 message="loading catalog",
+                fraction=0.0,
+                metadata={"phase": "load"},
             )
         )
 
     clips_df = read_clips(catalog.resolved_clips_path())
     overrides = load_overrides(resolved_overrides_path(catalog.work_dir))
+    if progress is not None:
+        progress(
+            ProgressEvent(
+                stage="select",
+                message=f"building candidate features from {clips_df.height} clips",
+                current=0,
+                total=max(clips_df.height, 1),
+                fraction=0.02,
+                metadata={"phase": "features"},
+            )
+        )
     candidates = _clip_features_from_catalog(clips_df, config, overrides, split_plan)
 
     if progress is not None:
         progress(
             ProgressEvent(
                 stage="select",
-                message="running selection",
-                total=len(candidates),
+                message=f"running selection on {len(candidates)} candidates",
+                current=0,
+                total=max(len(candidates), 1),
+                fraction=0.05,
+                metadata={"phase": "start", "candidates": len(candidates)},
             )
         )
 
@@ -296,6 +331,7 @@ def select_dataset(
         split_plan=split_plan,
         target_duration_sec=target_duration_sec,
         tolerance_ratio=tolerance_ratio,
+        progress=progress,
     )
 
     if split_plan is None:
@@ -326,9 +362,18 @@ def select_dataset(
         progress(
             ProgressEvent(
                 stage="select",
-                message="selection complete",
+                message=(
+                    f"wrote selection plan selected={len(result.selected_ids)} "
+                    f"reserve={len(result.reserve_ids)}"
+                ),
                 current=len(result.selected_ids),
-                total=len(candidates),
+                total=max(len(candidates), 1),
+                fraction=1.0,
+                metadata={
+                    "phase": "complete",
+                    "selected": len(result.selected_ids),
+                    "reserve": len(result.reserve_ids),
+                },
             )
         )
 

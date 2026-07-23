@@ -17,6 +17,7 @@ class JobRunner:
         self.store = store
         self.config_path = Path(config_path)
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
+        self._stderr_handles: dict[str, object] = {}
         self._lock = threading.Lock()
 
     def start_job(self, job_id: str) -> None:
@@ -38,21 +39,33 @@ class JobRunner:
             "--db-path",
             str(self.store.db_path),
         ]
+        # Never use stderr=PIPE without a concurrent reader: the OS pipe buffer
+        # fills (~64KiB) and the worker blocks forever on write (seen as analyze
+        # stuck near ~2% on large corpora). Log to a file instead.
+        stderr_path = self.store.progress_jsonl_path(job_id).with_name("worker.stderr.log")
+        stderr_path.parent.mkdir(parents=True, exist_ok=True)
+        stderr_file = stderr_path.open("wb")
         popen_kwargs: dict = {
             "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.PIPE,
+            "stderr": stderr_file,
             "shell": False,
         }
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
 
-        process = subprocess.Popen(cmd, **popen_kwargs)
+        try:
+            process = subprocess.Popen(cmd, **popen_kwargs)
+        except Exception:
+            stderr_file.close()
+            raise
+
         with self._lock:
             self._processes[job_id] = process
+            self._stderr_handles[job_id] = stderr_file
 
         watcher = threading.Thread(
             target=self._watch_process,
-            args=(job_id, process),
+            args=(job_id, process, stderr_path),
             name=f"job-watcher-{job_id[:8]}",
             daemon=True,
         )
@@ -81,11 +94,21 @@ class JobRunner:
                 self.store.update_status(job_id, JobStatus.INTERRUPTED)
                 self._terminate_process(process)
 
-    def _watch_process(self, job_id: str, process: subprocess.Popen[bytes]) -> None:
+    def _watch_process(
+        self,
+        job_id: str,
+        process: subprocess.Popen[bytes],
+        stderr_path: Path,
+    ) -> None:
         return_code = process.wait()
-        stderr = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
         with self._lock:
             self._processes.pop(job_id, None)
+            handle = self._stderr_handles.pop(job_id, None)
+        if handle is not None:
+            try:
+                handle.close()  # type: ignore[union-attr]
+            except Exception:
+                pass
 
         try:
             job = self.store.get_job(job_id)
@@ -104,7 +127,7 @@ class JobRunner:
                 self.store.update_status(job_id, JobStatus.SUCCEEDED, clear_pid=True)
             return
 
-        message = stderr.strip() or f"worker exited with code {return_code}"
+        message = _tail_text(stderr_path, max_chars=8000) or f"worker exited with code {return_code}"
         self.store.update_status(
             job_id,
             JobStatus.FAILED,
@@ -133,3 +156,12 @@ class JobRunner:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+
+
+def _tail_text(path: Path, *, max_chars: int) -> str:
+    if not path.is_file():
+        return ""
+    data = path.read_bytes()
+    if len(data) > max_chars:
+        data = data[-max_chars:]
+    return data.decode("utf-8", errors="replace").strip()

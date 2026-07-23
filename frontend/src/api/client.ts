@@ -3,6 +3,9 @@ import type {
   ClipsPage,
   CompareRequest,
   CompareResult,
+  ConfigResponse,
+  ConfigSaveResponse,
+  ConfigValidateResponse,
   CoverageReport,
   CreateJobRequest,
   DashboardSummary,
@@ -109,6 +112,24 @@ export const api = {
   compare: (body: CompareRequest) =>
     request<CompareResult>("/api/compare", {
       method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  getConfig: () => request<ConfigResponse>("/api/config"),
+
+  validateConfig: (body: { data?: Record<string, unknown>; yaml_text?: string }) =>
+    request<ConfigValidateResponse>("/api/config/validate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  saveConfig: (body: {
+    data?: Record<string, unknown>;
+    yaml_text?: string;
+    mode?: "data" | "yaml";
+  }) =>
+    request<ConfigSaveResponse>("/api/config", {
+      method: "PUT",
       body: JSON.stringify(body),
     }),
 

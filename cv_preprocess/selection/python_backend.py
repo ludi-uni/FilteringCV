@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import random
+import time
 from collections import Counter
 from dataclasses import dataclass
 
+from cv_preprocess.application.common import ProgressEvent, ProgressSink
 from cv_preprocess.config.dataset_builder import (
     DatasetBuilderConfig,
     DuplicatesConfig,
@@ -41,6 +43,8 @@ class PythonSelectionBackend:
         target_duration_sec: float,
         tolerance_ratio: float,
         seed: int,
+        progress: ProgressSink | None = None,
+        progress_label: str | None = None,
     ) -> SelectionResult:
         return greedy_local_search(
             candidates,
@@ -48,6 +52,8 @@ class PythonSelectionBackend:
             target_duration_sec=target_duration_sec,
             tolerance_ratio=tolerance_ratio,
             seed=seed,
+            progress=progress,
+            progress_label=progress_label,
         )
 
 
@@ -123,6 +129,37 @@ def _eligible_candidates(candidates: list[ClipFeatures]) -> list[ClipFeatures]:
     return [clip for clip in candidates if clip.override_action != "hard_reject"]
 
 
+def _emit_progress(
+    progress: ProgressSink | None,
+    *,
+    phase: str,
+    message: str,
+    current: int | None = None,
+    total: int | None = None,
+    fraction: float | None = None,
+    label: str | None = None,
+    **metadata: object,
+) -> None:
+    if progress is None:
+        return
+    meta: dict[str, object] = {"phase": phase, **metadata}
+    if label:
+        meta["label"] = label
+        message = f"[{label}] {message}"
+    if fraction is not None:
+        fraction = max(0.0, min(1.0, float(fraction)))
+    progress(
+        ProgressEvent(
+            stage="select",
+            message=message,
+            current=current,
+            total=total,
+            fraction=fraction,
+            metadata=meta,
+        )
+    )
+
+
 def greedy_local_search(
     candidates: list[ClipFeatures],
     *,
@@ -130,6 +167,8 @@ def greedy_local_search(
     target_duration_sec: float,
     tolerance_ratio: float,
     seed: int,
+    progress: ProgressSink | None = None,
+    progress_label: str | None = None,
 ) -> SelectionResult:
     selection = config.selection
     feature_weights = dict(selection.feature_weights)
@@ -143,6 +182,19 @@ def greedy_local_search(
 
     eligible = _eligible_candidates(candidates)
     clips_by_id = {clip.clip_id: clip for clip in eligible}
+    target_hours = target_duration_sec / 3600.0
+
+    _emit_progress(
+        progress,
+        phase="prepare",
+        message=f"preparing {len(eligible)} eligible candidates (target {target_hours:.2f}h)",
+        current=0,
+        total=max(1, len(eligible)),
+        fraction=0.0,
+        label=progress_label,
+        eligible=len(eligible),
+        target_duration_sec=target_duration_sec,
+    )
 
     pool_counts_by_family = {
         family: pool_counts_for_family(eligible, family) for family in feature_weights
@@ -167,6 +219,36 @@ def greedy_local_search(
 
     min_duration = target_duration_sec * max(0.0, 1.0 - tolerance_ratio)
     max_duration = target_duration_sec * (1.0 + tolerance_ratio)
+    last_progress_at = 0.0
+    greedy_steps = 0
+    remaining: list[ClipFeatures] = []
+
+    def report_greedy(*, force: bool = False) -> None:
+        nonlocal last_progress_at
+        now = time.monotonic()
+        if not force and (now - last_progress_at) < 0.4:
+            return
+        last_progress_at = now
+        duration_frac = (
+            state.total_duration_sec / target_duration_sec if target_duration_sec > 0 else 0.0
+        )
+        _emit_progress(
+            progress,
+            phase="greedy",
+            message=(
+                f"greedy selected={len(selected)} "
+                f"duration={state.total_duration_sec / 3600.0:.3f}h / {target_hours:.2f}h "
+                f"remaining={len(remaining)}"
+            ),
+            current=len(selected),
+            total=max(len(selected) + 1, len(eligible)),
+            fraction=min(0.8, duration_frac * 0.8),
+            label=progress_label,
+            selected=len(selected),
+            duration_sec=state.total_duration_sec,
+            target_duration_sec=target_duration_sec,
+            greedy_steps=greedy_steps,
+        )
 
     def score_clip(clip: ClipFeatures) -> tuple[float, dict, dict]:
         return total_selection_score(
@@ -213,6 +295,7 @@ def greedy_local_search(
     remaining = [
         clip for clip in eligible if clip.clip_id not in selected and clip.clip_id not in forced_exclude
     ]
+    report_greedy(force=True)
 
     while state.total_duration_sec < min_duration and remaining:
         best_clip: ClipFeatures | None = None
@@ -251,6 +334,21 @@ def greedy_local_search(
             selected_reason="greedy_marginal_utility",
         )
         remaining = [clip for clip in remaining if clip.clip_id != best_clip.clip_id]
+        greedy_steps += 1
+        report_greedy()
+
+    report_greedy(force=True)
+
+    _emit_progress(
+        progress,
+        phase="reserve",
+        message="ranking reserve candidates",
+        current=len(selected),
+        total=max(len(eligible), 1),
+        fraction=0.82,
+        label=progress_label,
+        selected=len(selected),
+    )
 
     reserve_candidates = [clip for clip in eligible if clip.clip_id not in selected]
     reserve_candidates.sort(
@@ -286,6 +384,8 @@ def greedy_local_search(
             swap_patterns=selection.local_search.swap_patterns,
             max_iterations=selection.local_search.max_iterations,
             max_wall_sec=selection.local_search.max_wall_sec,
+            progress=progress,
+            progress_label=progress_label,
         )
 
     for rank, clip_id in enumerate(selected, start=1):
@@ -296,6 +396,18 @@ def greedy_local_search(
     rng = random.Random(seed)
     rng.shuffle(tail_ids)
     reserve_ids.extend(tail_ids)
+
+    _emit_progress(
+        progress,
+        phase="done",
+        message=f"selection finished selected={len(selected)} reserve={len(reserve_ids)}",
+        current=len(selected),
+        total=max(len(eligible), 1),
+        fraction=1.0,
+        label=progress_label,
+        selected=len(selected),
+        reserve=len(reserve_ids),
+    )
 
     return SelectionResult(
         selected_ids=selected,

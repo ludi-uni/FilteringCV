@@ -609,6 +609,17 @@ def cmd_phonemize(
     typer.echo(g2p_phonemes(normalize_for_tts(text), kana=kana))
 
 
+def _default_gui_project_root(config: Path) -> Path:
+    """Prefer repo root that contains ``frontend/`` (not ``config/`` when using ``-c config/...``)."""
+    cwd = Path.cwd().resolve()
+    if (cwd / "frontend").is_dir() or (cwd / "pyproject.toml").is_file():
+        return cwd
+    for candidate in (config.resolve().parent, *config.resolve().parents):
+        if (candidate / "frontend").is_dir() or (candidate / "pyproject.toml").is_file():
+            return candidate
+    return cwd
+
+
 @app.command("gui")
 def cmd_gui(
     config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
@@ -618,7 +629,7 @@ def cmd_gui(
         None,
         "--project-root",
         path_type=Path,
-        help="Project root for resolving work/output paths (default: config parent)",
+        help="Project root for work/output/frontend (default: cwd or repo with frontend/)",
     ),
 ) -> None:
     """Start the dataset builder FastAPI GUI (serves frontend/dist when built)."""
@@ -631,7 +642,14 @@ def cmd_gui(
 
     from cv_preprocess.web.app import create_app
 
-    root = project_root.resolve() if project_root is not None else config.resolve().parent
+    root = project_root.resolve() if project_root is not None else _default_gui_project_root(config)
+    dist = root / "frontend" / "dist"
+    if not dist.is_dir():
+        typer.echo(
+            f"Warning: frontend build not found at {dist}. "
+            "Run: cd frontend && pnpm install && pnpm build",
+            err=True,
+        )
     app = create_app(config.resolve(), root)
     uvicorn.run(app, host=host, port=port, log_level="info")
 
