@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -18,9 +19,11 @@ from cv_preprocess.config.gates_quality import (
 )
 from cv_preprocess.config.input import InputConfig, SpeakersConfig
 from cv_preprocess.config.output_split import OutputConfig, SplitConfig
+from cv_preprocess.config.dataset_builder import ComputeConfig, DatasetBuilderConfig
 from cv_preprocess.config.text import TextConfig
 
 class PipelineConfig(BaseModel):
+    schema_version: int = 1
     input: InputConfig
     speakers: SpeakersConfig = Field(default_factory=SpeakersConfig)
     audio_pipeline: AudioPipelineConfig = Field(default_factory=AudioPipelineConfig)
@@ -44,6 +47,8 @@ class PipelineConfig(BaseModel):
     split: SplitConfig = Field(default_factory=SplitConfig)
     secondary: SecondaryPipelineConfig | None = None
     phoneme_manifest: PhonemeManifestPipelineConfig | None = None
+    dataset_builder: DatasetBuilderConfig = Field(default_factory=DatasetBuilderConfig)
+    compute: ComputeConfig = Field(default_factory=ComputeConfig)
 
     @model_validator(mode="before")
     @classmethod
@@ -194,4 +199,16 @@ class PipelineConfig(BaseModel):
     @classmethod
     def from_yaml(cls, path: Path) -> PipelineConfig:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError(f"YAML root must be a mapping: {path}")
+        if "schema_version" not in raw:
+            raw = dict(raw)
+            raw["schema_version"] = 1
+        elif int(raw["schema_version"]) < 2:
+            warnings.warn(
+                "Pipeline config schema_version < 2; dataset_builder fields use defaults "
+                "unless explicitly set in YAML.",
+                UserWarning,
+                stacklevel=2,
+            )
         return cls.model_validate(raw)

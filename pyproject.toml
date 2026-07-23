@@ -53,10 +53,18 @@ dependencies = [
   "typer>=0.12",
   "tqdm>=4.66",
   "pyopenjtalk-plus[onnxruntime]",
+  "polars>=1.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.4"]
+gui = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "websockets>=12.0",
+  "python-multipart>=0.0.9",
+]
+optimizer = ["ortools>=9.10"]
 # Montreal Forced Aligner（``mfa`` CLI）。ホスト向け。PyPI 単体では kalpy 不足で失敗しがちなので conda-forge 推奨（docs/開発環境.md）。
 # Dev Container では MFA は入れず NeMo NFA 用の ``/opt/nfa-venv`` を使う（NeMo と sgmse の protobuf 要件が衝突するため .venv へ nemo を入れない）。
 mfa = ["montreal-forced-aligner>=3.2,<4"]

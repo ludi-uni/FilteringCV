@@ -20,6 +20,16 @@ from cv_preprocess.config.audio_steps import (
     TrimSilenceStep,
 )
 from cv_preprocess.config.aux_pipelines import PhonemeManifestPipelineConfig, SecondaryPipelineConfig
+from cv_preprocess.config.dataset_builder import (
+    ComputeConfig,
+    DatasetBuilderConfig,
+    DatasetBuilderSplitConfig,
+    DuplicatesConfig,
+    FeatureSupportConfig,
+    MaterializeConfig,
+    SelectionConfig,
+    SpeakerConstraintsConfig,
+)
 from cv_preprocess.config.denoise_step import DenoiseStep
 from cv_preprocess.config.gates_quality import (
     EarlyAudioGateConfig,
@@ -42,8 +52,12 @@ __all__ = [
     "BandwidthExtensionStep",
     "CLISettings",
     "ClipMetadataFilters",
+    "ComputeConfig",
+    "DatasetBuilderConfig",
+    "DatasetBuilderSplitConfig",
     "DecodeStep",
     "DenoiseStep",
+    "DuplicatesConfig",
     "DiffClickRepairStep",
     "EarlyAudioGateConfig",
     "EdgeUiClickStep",
@@ -52,6 +66,8 @@ __all__ = [
     "LipNoiseRepairStep",
     "LipNoiseSuppressStep",
     "LowpassStep",
+    "FeatureSupportConfig",
+    "MaterializeConfig",
     "MfaGateConfig",
     "MfaPrefilterConfig",
     "NfaGateConfig",
@@ -67,7 +83,9 @@ __all__ = [
     "SaveWavStep",
     "SidonRestoreStep",
     "SecondaryPipelineConfig",
+    "SelectionConfig",
     "SnrEstimatorConfig",
+    "SpeakerConstraintsConfig",
     "SpeakersConfig",
     "SplitConfig",
     "TextConfig",
