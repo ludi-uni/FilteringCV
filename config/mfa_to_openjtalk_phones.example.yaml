@@ -1,0 +1,14 @@
+# MFA phones → OpenJTalk G2P トークン列の対応表サンプル。
+# 使い方: mfa_gate.mfa_to_g2p_token_map_path にパスを指定。
+# 草案生成: cv-preprocess suggest-mfa-g2p-map （人手レビュー必須）
+# 詳細: docs/音素照合マニフェスト.md
+
+# 左: MFA TextGrid の phone ラベル、右: 空白区切りの G2P トークン（空文字で削除）
+a: a
+i: i
+u: u
+e: e
+o: o
+cl: cl
+pau: pau
+spn: ""

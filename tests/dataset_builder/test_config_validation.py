@@ -16,11 +16,13 @@ def test_default_pipeline_config_has_dataset_builder_disabled() -> None:
     assert cfg.compute.backend == "auto"
 
 
-def test_default_yaml_still_loads_without_schema_version() -> None:
-    path = Path(__file__).resolve().parents[2] / "config" / "default.yaml"
+def test_example_yaml_is_schema_v2_builder_template() -> None:
+    path = Path(__file__).resolve().parents[2] / "config" / "example.yaml"
     cfg = load_config(path)
-    assert cfg.schema_version == 1
-    assert cfg.dataset_builder.enabled is False
+    assert cfg.schema_version == 2
+    assert cfg.dataset_builder.enabled is True
+    assert cfg.two_pass_denoise.enabled is True
+    assert cfg.audio_pipeline_enhance is not None
 
 
 def test_negative_selection_weight_fails() -> None:

@@ -5,9 +5,15 @@ The dataset builder constructs a curated TTS corpus under quality, coverage, spe
 ## Quick start
 
 ```bash
-# 1. Configure input.corpus_root and dataset_builder.work_dir in config YAML
-cv-preprocess scan -c config/my_builder.yaml
-cv-preprocess build -c config/my_builder.yaml
+# 1. Copy the template and edit corpus paths / speakers
+cp config/example.yaml config/default.yaml
+
+# 2. Install Sidon (and optionally GUI) extras
+uv sync --extra sidon --extra gui --extra dev
+
+# 3. Scan then build
+cv-preprocess scan -c config/default.yaml
+cv-preprocess build -c config/default.yaml
 ```
 
 `build` orchestrates: scan → analyze → plan-split → select → materialize → audit, with stage resume (use `--force` to redo stages).
@@ -17,11 +23,10 @@ cv-preprocess build -c config/my_builder.yaml
 | Stage | Command | Output |
 |-------|---------|--------|
 | Scan | `scan` | Corpus summary JSON |
-| Analyze | `analyze` | `work/catalog/*.parquet`, audio cache |
+| Analyze | `analyze` | `work/catalog/*.parquet`, audio cache (Sidon enhance) |
 | Plan split | `plan-split` | `work/plans/split_plan.json` |
 | Select | `select` | `work/plans/selection_plan.parquet` |
 | Materialize | `materialize` | `wavs/` + LJSpeech `validated.tsv` / `metadata.csv` + `metadata.jsonl` + split manifests |
-
 | Audit | `audit` | Integrity checks |
 | Full pipeline | `build` | All of the above + `run_manifest.json` |
 
@@ -39,13 +44,13 @@ dataset_builder:
     local_search:
       enabled: true
   speaker_constraints:
-    max_duration_sec_per_speaker: 3600
+    max_duration_minutes: 120
   duplicates:
     exact_audio: { enabled: true, max_selected: 1 }
   split:
     protocol: unseen_speaker
-    train: 0.9
-    val: 0.05
+    train: 0.85
+    val: 0.10
     test: 0.05
 
 compute:
@@ -74,11 +79,11 @@ When `dataset_builder.enabled: false`, `cv-preprocess preprocess` runs the origi
 
 Materialize only exports `work/audio_cache` WAVs. Cleaning happens in **analyze**:
 
-1. Put Sidon in `audio_pipeline_enhance` (`type: sidon_restore`) and set `two_pass_denoise.enabled: true` (see `config/default.yaml` / `config/example.yaml`).
+1. Put Sidon in `audio_pipeline_enhance` (`type: sidon_restore`) and set `two_pass_denoise.enabled: true` (see `config/example.yaml`).
 2. Install deps: `uv sync --extra sidon`
-3. Re-run analyze after changing the audio pipeline (`pipeline_hash` changes → new cache):  
-   `cv-preprocess analyze -c config/default.yaml --force` (or Build with force on analyze)
-4. Then re-run select → materialize (or full `build --force` as needed)
+3. Re-run analyze after changing the audio pipeline (`pipeline_hash` changes → new cache):
+   `cv-preprocess build -c config/default.yaml --force`
+4. Then select → materialize run as part of `build`
 
 Without the enhance chain, exported `wavs/` are essentially decoded/resampled only.
 

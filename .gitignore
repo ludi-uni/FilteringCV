@@ -8,13 +8,29 @@ dist/
 build/
 .pytest_cache/
 .ruff_cache/
+
+# Generated / local audio and corpora
 *.wav
 out/
+out/*.old
+out/*.staging
 CommonVoice
+data/
+**/work/
+
+# Local machine configs (copy from config/example.yaml; keep personal client_ids here)
+config/default.yaml
+config/*.local.yaml
+
+# Secrets / env
+.env
+.env.*
+*.pem
+credentials.json
+
+# Tooling / editor
 .cursor/
 
-default.yaml
-**/work/
-data/
-
+# Frontend
 frontend/node_modules/
+frontend/dist/

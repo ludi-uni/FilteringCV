@@ -137,12 +137,12 @@ def test_reject_b_drops_tier_b() -> None:
     assert r.reason in ("gate_quality_tier_b", "gate_quality_tier_c")
 
 
-def test_default_yaml_quality_gate_model() -> None:
+def test_example_yaml_quality_gate_model() -> None:
     from pathlib import Path
 
     from cv_preprocess.config import load_config
 
-    p = Path(__file__).resolve().parents[1] / "config" / "default.yaml"
+    p = Path(__file__).resolve().parents[1] / "config" / "example.yaml"
     cfg = load_config(p)
     assert cfg.quality_gate.quality_tier_mode in ("annotate", "reject_c", "reject_b", "off")
     assert cfg.quality_gate.max_silence_ratio >= cfg.quality_gate.quality_tier_b_max_silence_ratio

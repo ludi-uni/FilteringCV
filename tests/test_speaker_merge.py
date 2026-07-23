@@ -74,8 +74,8 @@ def test_filter_then_merge_integration() -> None:
     assert out[0].client_id == "solo"
 
 
-def test_default_yaml_loads_speaker_merge_fields() -> None:
-    p = Path(__file__).resolve().parents[1] / "config" / "default.yaml"
+def test_example_yaml_loads_speaker_merge_fields() -> None:
+    p = Path(__file__).resolve().parents[1] / "config" / "example.yaml"
     cfg = load_config(p)
     assert isinstance(cfg.speakers.merge_filtered_speakers_as_one, bool)
     assert cfg.speakers.merged_speaker_client_id is None or isinstance(

@@ -46,7 +46,7 @@ New top-level/nested blocks (defaults are safe):
 
 ## Artifacts
 
-Legacy `metadata.jsonl` is still produced by `preprocess` when builder is disabled. With builder enabled, use `materialize` output (`metadata/train.jsonl`, etc.).
+Legacy `metadata.jsonl` is still produced by `preprocess` when builder is disabled. With builder enabled, use `materialize` output at the dataset root (`metadata.jsonl`, `validated.tsv`, `metadata.csv`, `train.jsonl` / `train.tsv`, etc.).
 
 ## Overrides
 

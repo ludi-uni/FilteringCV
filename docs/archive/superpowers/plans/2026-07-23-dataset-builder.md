@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.10+, Pydantic v2, Polars, Typer, FastAPI/uvicorn (gui extra), React+Vite+TS+pnpm, SQLite WAL, pytest, ruff, uv.
 
-**Spec:** `docs/superpowers/specs/2026-07-23-dataset-builder-design.md`
+**Spec:** `docs/archive/superpowers/specs/2026-07-23-dataset-builder-design.md`
 
 ## Global Constraints
 

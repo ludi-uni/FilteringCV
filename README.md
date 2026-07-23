@@ -4,11 +4,12 @@ Common Voice 向けの音声・テキスト前処理パッケージです。ラ�
 
 ## セットアップ
 
-- **Windows**: Dev Container（`.devcontainer`）の利用を推奨します。作成時に **`uv sync --extra sidon --extra dev`** が走り、[`config/default.yaml`](config/default.yaml) の **enhance での Sidon**（`sidon_restore`・`sidon_after_enhance_split`）に必要な依存が `.venv` に入ります。**NeMo Forced Aligner 用の別 venv**（`/opt/nfa-venv`）と NeMo の `align.py` ツリーもイメージに含まれます。**MFA（conda）は `.venv` に入れていません**（NFA と SGMSE の protobuf 要件が衝突するため `.venv` に NeMo を同居させない）。
+- **Windows**: Dev Container（`.devcontainer`）の利用を推奨します。作成時に **`uv sync --extra sidon --extra gui --extra dev`** が走り、[`config/example.yaml`](config/example.yaml) の **enhance での Sidon**（`sidon_restore`・`sidon_after_enhance_split`）に必要な依存が `.venv` に入ります。**NeMo Forced Aligner 用の別 venv**（`/opt/nfa-venv`）と NeMo の `align.py` ツリーもイメージに含まれます。**MFA（conda）は `.venv` に入れていません**（NFA と SGMSE の protobuf 要件が衝突するため `.venv` に NeMo を同居させない）。
 - **Linux**: リポジトリをクローンし、既定構成に合わせるなら次で足ります。
 
   ```bash
-  uv sync --extra sidon --extra dev
+  uv sync --extra sidon --extra gui --extra dev
+  cp config/example.yaml config/default.yaml   # ローカル用（gitignore）
   ```
 
   **Dasheng**（`denoise.method: dasheng`）や **SGMSE**、**HiFi-GAN** を設定に含める場合は、それぞれ **`--extra dasheng`** / **`--extra sgmse`** / **`--extra hifigan`** を追加。**NARA-WPE＋DeepFilterNet** は **`--extra wpe_dfn`**（`deepfilterlib` のビルドに Rust / `cargo` が要ることがあります）。詳細は [docs/開発環境.md](docs/開発環境.md) を参照。
@@ -59,8 +60,10 @@ PyTorch は **CUDA 12.x（公式ホイール `cu128`）** 向けに `pyproject.t
 
 ### 設定ファイル
 
-- 既定の雛形: [`config/default.yaml`](config/default.yaml) をコピーして `input.corpus_root` や `speakers.include_client_ids` などを自分の Common Voice 展開先に合わせて編集するか、[config/example.yaml](config/example.yaml) を参考にします。コミットしたくない差分だけを分けたい場合は `config/default.local.yaml` のように別名にし（`.gitignore` に含まれています）、`cv-preprocess … -c config/default.local.yaml` のように指定してください。
+- コミット用の雛形: [`config/example.yaml`](config/example.yaml) を `config/default.yaml` にコピーし、`input.corpus_root` や `speakers.include_client_ids` などを自分の Common Voice 展開先に合わせて編集します（`config/default.yaml` は `.gitignore` 対象）。別名で分ける場合は `config/mysetup.local.yaml` のようにし、`cv-preprocess … -c …` で指定してください。
 - パイプラインや品質ゲートの意味は上表の [docs/仕様.md](docs/仕様.md) を参照してください。
+- データセットビルダー（推奨）: `dataset_builder.enabled: true` のうえ **`cv-preprocess build -c config/default.yaml`**（詳細は [docs/dataset-builder.md](docs/dataset-builder.md)）。
+- 従来の逐次前処理だけを使う場合は `dataset_builder.enabled: false` にして `cv-preprocess preprocess` を使います。
 
 ### 注意: `validated.tsv` の「行」と話者 ID（`client_id`）
 
@@ -85,7 +88,7 @@ Common Voice の `validated.tsv` は **タブ区切りのテキスト**ですが
 | `cv-preprocess text-normalize "<文>"` | TTS 向けに正規化したテキストを 1 行で出力します（デバッグ用）。 |
 | `cv-preprocess phonemize "<文>"` | 正規化のうえ G2P した音素列を出力します。読みをカナで出す場合は `--kana` を付けます。 |
 
-本番の一連の流れは、**設定を用意 → `scan` で確認 → `preprocess`** が基本です。
+本番の一連の流れは、**設定を用意 → `scan` で確認 → `build`（ビルダー）または `preprocess`（レガシー）** です。
 
 ### データセットビルダー（`dataset_builder.enabled: true`）
 
@@ -107,7 +110,7 @@ YAML で `dataset_builder.enabled: true` を指定すると、カタログ Parqu
 #### GUI（任意）
 
 ```bash
-uv sync --extra gui
+uv sync --extra gui --extra sidon
 ```
 
 FastAPI バックエンド用の依存が入ります。`frontend/` がある場合は `cd frontend && pnpm install && pnpm build` で静的アセットをビルドし、`cv-preprocess gui -c <設定.yaml>` で起動します（既定 `127.0.0.1:8765`）。手順は [docs/gui.md](docs/gui.md) を参照。

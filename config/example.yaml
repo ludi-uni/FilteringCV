@@ -1,19 +1,24 @@
-# Dataset builder 用設定（TTS: Sidon enhance 込み）。
-# コーパスパス・話者リストは環境に合わせて変更してください。
-# 雛形の差分比較は config/example.yaml を参照。
+# コミット用の雛形。ローカル作業用にコピーして編集してください:
+#   cp config/example.yaml config/default.yaml
+# config/default.yaml は .gitignore 対象（話者 ID など環境固有値を置く想定）。
+#
+# 依存: uv sync --extra sidon （GUI を使う場合は --extra gui も）
 
 schema_version: 2
 
 input:
-  corpus_root: CommonVoice
+  # Common Voice の展開先（ja ロケールのディレクトリ）
+  corpus_root: data/cv-corpus-placeholder/ja
   clip_tsv: validated.tsv
   audio_subdir: clips
   locale_expected: ja
+  # 試行時は整数を指定（null で全件）
   max_clips: null
 
 speakers:
   merge_filtered_speakers_as_one: false
   max_clips_per_speaker: null
+  # 空リスト = フィルタなし（全話者）。絞る場合は client_id ハッシュを列挙。
   include_client_ids: []
   clip_metadata_filters:
     genders: []
@@ -25,7 +30,7 @@ speakers:
     up_votes: null
     down_votes: null
 
-# Align →（将来 MFA/NFA）→ Sidon enhance。依存: uv sync --extra sidon
+# Align → Sidon enhance。two_pass_denoise.enabled: true とセットで使う。
 audio_pipeline_align:
   target_sample_rate: 24000
   channels: 1
@@ -122,7 +127,7 @@ output:
 dataset_builder:
   enabled: true
   work_dir: work
-  target_duration_hours: 100
+  target_duration_hours: 10
   random_seed: 42
   selection:
     local_search: { enabled: true, max_iterations: 500, max_seconds: 30, swap_patterns: [1v1] }
@@ -139,3 +144,15 @@ dataset_builder:
 
 compute:
   backend: auto
+
+# 二次パイプライン（任意）: cv-preprocess secondary
+# docs/追加仕様.md §11–§12、BandwidthExtensionStep（uv sync --extra hifigan）
+# secondary:
+#   output_root: out/cv_tts_secondary
+#   audio_pipeline:
+#     target_sample_rate: 24000
+#     audio_pipeline_id: secondary_v1
+#     steps:
+#       - type: bandwidth_extension
+#         generator_checkpoint: data/hifigan/generator_v3
+#         config_json: data/hifigan/config.json
