@@ -59,6 +59,7 @@ class AnalyzeResult(BaseModel):
     catalog: CatalogRef
     eligible_count: int = 0
     hard_rejected_count: int = 0
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SplitPlan(BaseModel):

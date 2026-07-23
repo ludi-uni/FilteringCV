@@ -6,6 +6,7 @@ from typing import cast
 
 import typer
 
+from cv_preprocess.application.analyze import analyze_project
 from cv_preprocess.config import load_config
 from cv_preprocess.pipeline.dataset_partition import run_dataset_partition, validate_group_by
 from cv_preprocess.pipeline.ljspeech_tsv import metadata_jsonl_to_validated_tsv
@@ -28,6 +29,27 @@ def cmd_scan(
     cfg = load_config(config)
     info = scan_corpus(cfg)
     typer.echo(json.dumps(info, ensure_ascii=False, indent=2))
+
+
+@app.command("analyze")
+def cmd_analyze(
+    config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+) -> None:
+    """Dataset builder analyze: emit catalog parquet and audio cache under work_dir."""
+    cfg = load_config(config)
+    result = analyze_project(cfg)
+    typer.echo(
+        json.dumps(
+            {
+                "catalog": result.catalog.model_dump(mode="json"),
+                "eligible_count": result.eligible_count,
+                "hard_rejected_count": result.hard_rejected_count,
+                "warnings": result.warnings,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 @app.command("metadata-jsonl-to-validated-tsv")
