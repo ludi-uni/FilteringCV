@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
 from cv_preprocess.catalog import CatalogRef
-
 
 @runtime_checkable
 class ProgressSink(Protocol):
@@ -72,6 +72,7 @@ class SelectionPlan(BaseModel):
     catalog: CatalogRef
     selected_clip_ids: list[str] = Field(default_factory=list)
     reserve_clip_ids: list[str] = Field(default_factory=list)
+    plan_path: Path | None = None
 
 
 class MaterializeResult(BaseModel):

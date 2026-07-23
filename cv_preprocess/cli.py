@@ -7,6 +7,8 @@ from typing import cast
 import typer
 
 from cv_preprocess.application.analyze import analyze_project
+from cv_preprocess.application.select import select_dataset
+from cv_preprocess.catalog.reader import load_catalog
 from cv_preprocess.config import load_config
 from cv_preprocess.pipeline.dataset_partition import run_dataset_partition, validate_group_by
 from cv_preprocess.pipeline.ljspeech_tsv import metadata_jsonl_to_validated_tsv
@@ -45,6 +47,34 @@ def cmd_analyze(
                 "eligible_count": result.eligible_count,
                 "hard_rejected_count": result.hard_rejected_count,
                 "warnings": result.warnings,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+@app.command("select")
+def cmd_select(
+    config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+) -> None:
+    """Dataset builder select: greedy coverage selection from catalog."""
+    cfg = load_config(config)
+    work_dir = cfg.dataset_builder.work_dir
+    catalog = load_catalog(work_dir)
+    if catalog.clips_path is None:
+        raise typer.BadParameter(f"catalog not found under {work_dir / 'catalog'}")
+    from cv_preprocess.application.split import plan_dataset_split
+
+    split_plan = plan_dataset_split(cfg, catalog)
+    result = select_dataset(cfg, catalog, split_plan)
+    typer.echo(
+        json.dumps(
+            {
+                "catalog": result.catalog.model_dump(mode="json"),
+                "selected_count": len(result.selected_clip_ids),
+                "reserve_count": len(result.reserve_clip_ids),
+                "plan_path": str(result.plan_path) if result.plan_path else None,
             },
             ensure_ascii=False,
             indent=2,

@@ -39,6 +39,7 @@ class LocalSearchConfig(BaseModel):
     enabled: bool = True
     max_iterations: int = 500
     max_wall_sec: float = 120.0
+    max_seconds: float | None = None
     swap_patterns: list[Literal["1v1", "1v2", "2v1"]] = Field(
         default_factory=lambda: ["1v1", "1v2", "2v1"]
     )
@@ -50,11 +51,36 @@ class LocalSearchConfig(BaseModel):
             raise ValueError("local_search.max_iterations must be >= 0")
         return value
 
-    @field_validator("max_wall_sec")
+    @field_validator("max_wall_sec", "max_seconds")
     @classmethod
-    def non_negative_wall_sec(cls, value: float) -> float:
-        if value < 0:
-            raise ValueError("local_search.max_wall_sec must be >= 0")
+    def non_negative_wall_sec(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError("local_search wall-time limits must be >= 0")
+        return value
+
+    @model_validator(mode="after")
+    def resolve_max_seconds_alias(self) -> LocalSearchConfig:
+        if self.max_seconds is not None:
+            object.__setattr__(self, "max_wall_sec", self.max_seconds)
+        return self
+
+
+class QualitySelectionConfig(BaseModel):
+    hard_min_score: float | None = None
+    preferred_score: float | None = None
+    max_low_quality_ratio: float | None = None
+
+
+class DurationSelectionConfig(BaseModel):
+    target_hours: float | None = None
+    tolerance_ratio: float = 0.1
+    cost_exponent: float = 1.0
+
+    @field_validator("tolerance_ratio")
+    @classmethod
+    def valid_tolerance_ratio(cls, value: float) -> float:
+        if value < 0 or value > 1:
+            raise ValueError("selection.duration.tolerance_ratio must be in [0, 1]")
         return value
 
 
@@ -74,10 +100,28 @@ class SelectionConfig(BaseModel):
             "sentence_length_band": 0.2,
             "speaking_rate_band": 0.2,
             "interrogative_declarative": 0.2,
+            "speaker_diversity": 0.3,
+            "acoustic_diversity": 0.0,
+            "quality": 0.2,
         }
     )
+    weights: dict[str, float] = Field(default_factory=dict)
     diminishing_return_tau: dict[str, float] = Field(default_factory=dict)
+    quality: QualitySelectionConfig = Field(default_factory=QualitySelectionConfig)
+    duration: DurationSelectionConfig = Field(default_factory=DurationSelectionConfig)
     local_search: LocalSearchConfig = Field(default_factory=LocalSearchConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def merge_weight_aliases(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        weights = data.get("weights") or {}
+        feature_weights = dict(data.get("feature_weights") or {})
+        if weights:
+            feature_weights.update(weights)
+            data["feature_weights"] = feature_weights
+        return data
 
     @field_validator("reserve_ratio")
     @classmethod
@@ -86,7 +130,7 @@ class SelectionConfig(BaseModel):
             raise ValueError("selection.reserve_ratio must be in [0, 1]")
         return value
 
-    @field_validator("feature_weights", "diminishing_return_tau")
+    @field_validator("feature_weights", "diminishing_return_tau", "weights")
     @classmethod
     def non_negative_weights(cls, value: dict[str, float]) -> dict[str, float]:
         for key, weight in value.items():
@@ -97,8 +141,21 @@ class SelectionConfig(BaseModel):
 
 class SpeakerConstraintsConfig(BaseModel):
     max_clips_per_speaker: int | None = None
+    max_clips: int | None = None
     max_duration_sec_per_speaker: float | None = None
+    max_duration_minutes: float | None = None
+    min_duration_minutes: float | None = None
     prefer_duration_over_clip_count: bool = True
+
+    @model_validator(mode="after")
+    def resolve_aliases(self) -> SpeakerConstraintsConfig:
+        if self.max_clips is not None and self.max_clips_per_speaker is None:
+            object.__setattr__(self, "max_clips_per_speaker", self.max_clips)
+        if self.max_duration_minutes is not None and self.max_duration_sec_per_speaker is None:
+            object.__setattr__(
+                self, "max_duration_sec_per_speaker", self.max_duration_minutes * 60.0
+            )
+        return self
 
     @field_validator("max_clips_per_speaker")
     @classmethod
@@ -149,9 +206,9 @@ class DuplicatesConfig(BaseModel):
 
 
 class DistributionTemperatureConfig(BaseModel):
-    phone: float = 1.0
-    biphone: float = 1.0
-    triphone: float = 1.0
+    phone: float = 0.80
+    biphone: float = 0.65
+    triphone: float = 0.55
     mora: float = 1.0
     mora_bigram: float = 1.0
     full_context: float = 1.0
@@ -173,6 +230,8 @@ class DistributionTemperatureConfig(BaseModel):
 
 class FeatureSupportConfig(BaseModel):
     min_pool_count: int = 2
+    min_utterances: dict[str, int] = Field(default_factory=dict)
+    min_speakers: dict[str, int] = Field(default_factory=dict)
     exclude_tokens: list[str] = Field(default_factory=lambda: ["sil", "pau"])
     down_weight_tokens: list[str] = Field(default_factory=list)
 
@@ -205,6 +264,12 @@ class DatasetBuilderConfig(BaseModel):
     )
     feature_support: FeatureSupportConfig = Field(default_factory=FeatureSupportConfig)
     materialize: MaterializeConfig = Field(default_factory=MaterializeConfig)
+
+    @model_validator(mode="after")
+    def resolve_duration_target(self) -> DatasetBuilderConfig:
+        if self.target_duration_hours is None and self.selection.duration.target_hours is not None:
+            object.__setattr__(self, "target_duration_hours", self.selection.duration.target_hours)
+        return self
 
     @field_validator("target_duration_hours")
     @classmethod
