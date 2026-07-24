@@ -19,6 +19,7 @@ from cv_preprocess.web.routes import (
     jobs,
     overrides,
     reports,
+    session,
 )
 from cv_preprocess.web.websocket import create_websocket_router
 
@@ -64,6 +65,7 @@ def create_app(config_path: Path | None, project_root: Path) -> FastAPI:
     app.include_router(compare.router, prefix="/api/compare", tags=["compare"])
     app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
     app.include_router(config_api.router, prefix="/api/config", tags=["config"])
+    app.include_router(session.router, prefix="/api/session", tags=["session"])
 
     ws_router = create_websocket_router(progress_hub)
     app.include_router(ws_router)
