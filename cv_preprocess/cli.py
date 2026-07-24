@@ -609,20 +609,27 @@ def cmd_phonemize(
     typer.echo(g2p_phonemes(normalize_for_tts(text), kana=kana))
 
 
-def _default_gui_project_root(config: Path) -> Path:
-    """Prefer repo root that contains ``frontend/`` (not ``config/`` when using ``-c config/...``)."""
+def _default_gui_project_root(config: Path | None) -> Path:
     cwd = Path.cwd().resolve()
     if (cwd / "frontend").is_dir() or (cwd / "pyproject.toml").is_file():
         return cwd
-    for candidate in (config.resolve().parent, *config.resolve().parents):
-        if (candidate / "frontend").is_dir() or (candidate / "pyproject.toml").is_file():
-            return candidate
+    if config is not None:
+        for candidate in (config.resolve().parent, *config.resolve().parents):
+            if (candidate / "frontend").is_dir() or (candidate / "pyproject.toml").is_file():
+                return candidate
     return cwd
 
 
 @app.command("gui")
 def cmd_gui(
-    config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        "-c",
+        exists=True,
+        path_type=Path,
+        help="Pipeline YAML (optional; uses last config or setup screen)",
+    ),
     host: str = typer.Option("127.0.0.1", "--host", help="Bind host (default localhost only)"),
     port: int = typer.Option(8765, "--port", help="Bind port"),
     project_root: Path | None = typer.Option(
@@ -641,16 +648,21 @@ def cmd_gui(
         ) from exc
 
     from cv_preprocess.web.app import create_app
+    from cv_preprocess.web.last_config import to_project_relative, write_last_config
+    from cv_preprocess.web.session_resolve import resolve_gui_config_path
 
     root = project_root.resolve() if project_root is not None else _default_gui_project_root(config)
+    resolved = resolve_gui_config_path(project_root=root, cli_config=config)
+    if config is not None and resolved is not None:
+        write_last_config(root, to_project_relative(root, resolved))
     dist = root / "frontend" / "dist"
     if not dist.is_dir():
         typer.echo(
             f"Warning: frontend build not found at {dist}. "
-            "Run: cd frontend && pnpm install && pnpm build",
+            "Run: ./scripts/start-gui.sh   # or: cd frontend && pnpm install && pnpm build",
             err=True,
         )
-    app = create_app(config.resolve(), root)
+    app = create_app(resolved, root)
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
