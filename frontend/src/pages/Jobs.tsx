@@ -1,10 +1,14 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../api/client";
 import type { JobSummary, JobType } from "../api/types";
-import { JOB_TYPES } from "../api/types";
 import { Pagination } from "../components/Pagination";
 import { StatusBadge } from "../components/StatusBadge";
 import { useJobWebSocket } from "../hooks/useJobWebSocket";
+import {
+  JOB_PIPELINE,
+  formatJobTypeLabel,
+  jobPipelineItem,
+} from "../jobs/pipeline";
 
 const TERMINAL = new Set(["cancelled", "succeeded", "failed", "interrupted"]);
 
@@ -14,12 +18,13 @@ export function Jobs() {
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [jobType, setJobType] = useState<JobType>("scan");
+  const [jobType, setJobType] = useState<JobType>("build");
   const [force, setForce] = useState(false);
   const [creating, setCreating] = useState(false);
 
   const pageSize = 25;
   const { messages, latest, terminalStatus, connected } = useJobWebSocket(selectedId);
+  const selectedMeta = useMemo(() => jobPipelineItem(jobType), [jobType]);
 
   const loadJobs = useCallback(async () => {
     setLoading(true);
@@ -113,45 +118,121 @@ export function Jobs() {
     <div>
       <header className="page-header">
         <h1>Jobs</h1>
-        <p>Create, monitor, and cancel pipeline jobs</p>
+        <p>
+          データセットビルダーの段階実行。初めてなら{" "}
+          <strong>Build（推奨）</strong> で 1〜6 をまとめて実行します。
+        </p>
       </header>
 
       {error && <div className="error-banner">{error}</div>}
 
       <div className="stack">
         <section className="card">
-          <h2>New job</h2>
+          <h2>パイプライン順</h2>
+          <p className="job-pipeline-intro">
+            通常は上から下へ進みます。<code>Build</code> は同じ順序をオーケストレートし、途中成果物があれば再開します。
+            個別ステージは再実行や途中からのやり直し用です。
+          </p>
+          <ol className="job-pipeline">
+            {JOB_PIPELINE.filter((item) => item.kind === "stage").map((item) => (
+              <li key={item.type}>
+                <button
+                  type="button"
+                  className={
+                    jobType === item.type
+                      ? "job-pipeline-item is-selected"
+                      : "job-pipeline-item"
+                  }
+                  onClick={() => setJobType(item.type)}
+                >
+                  <span className="job-pipeline-step">{item.step}</span>
+                  <span className="job-pipeline-body">
+                    <span className="job-pipeline-title">
+                      <span className="mono">{item.type}</span>
+                      <span className="job-pipeline-label">{item.label}</span>
+                    </span>
+                    <span className="job-pipeline-summary">{item.summary}</span>
+                    <span className="job-pipeline-produces">出力: {item.produces}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ol>
+          {JOB_PIPELINE.filter((item) => item.kind === "orchestrator").map((item) => (
+            <button
+              key={item.type}
+              type="button"
+              className={
+                jobType === item.type
+                  ? "job-pipeline-item job-pipeline-build is-selected"
+                  : "job-pipeline-item job-pipeline-build"
+              }
+              onClick={() => setJobType(item.type)}
+            >
+              <span className="job-pipeline-step">★</span>
+              <span className="job-pipeline-body">
+                <span className="job-pipeline-title">
+                  <span className="mono">{item.type}</span>
+                  <span className="job-pipeline-label">{item.label}</span>
+                </span>
+                <span className="job-pipeline-summary">{item.summary}</span>
+                <span className="job-pipeline-produces">出力: {item.produces}</span>
+              </span>
+            </button>
+          ))}
+        </section>
+
+        <section className="card">
+          <h2>ジョブを開始</h2>
           <form className="toolbar" onSubmit={handleCreate}>
-            <label className="field">
-              <span className="label">Type</span>
+            <label className="field" style={{ minWidth: 220 }}>
+              <span className="label">選択中</span>
               <select
                 className="select"
                 value={jobType}
                 onChange={(e) => setJobType(e.target.value as JobType)}
               >
-                {JOB_TYPES.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
+                <optgroup label="推奨">
+                  <option value="build">build — Build（推奨・1〜6）</option>
+                </optgroup>
+                <optgroup label="個別ステージ（順番どおり）">
+                  {JOB_PIPELINE.filter((item) => item.kind === "stage").map((item) => (
+                    <option key={item.type} value={item.type}>
+                      {item.step}. {item.type} — {item.label}
+                    </option>
+                  ))}
+                </optgroup>
               </select>
             </label>
-            <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: "0.4rem" }}>
+            <label
+              className="field"
+              style={{ flexDirection: "row", alignItems: "center", gap: "0.4rem" }}
+              title="既存の段階成果物があっても再実行する"
+            >
               <input
                 type="checkbox"
                 checked={force}
                 onChange={(e) => setForce(e.target.checked)}
               />
-              <span className="label" style={{ margin: 0 }}>Force</span>
+              <span className="label" style={{ margin: 0 }}>
+                Force（再実行）
+              </span>
             </label>
             <button type="submit" className="btn btn-primary" disabled={creating}>
-              {creating ? "Creating…" : "Start job"}
+              {creating ? "Starting…" : `Start ${jobType}`}
             </button>
           </form>
+          {selectedMeta && (
+            <div className="job-selected-help">
+              <strong>{formatJobTypeLabel(jobType)}</strong>
+              <p>{selectedMeta.summary}</p>
+              <p className="job-pipeline-produces">出力: {selectedMeta.produces}</p>
+            </div>
+          )}
         </section>
 
         <section className="card">
-          <h2>Job list</h2>
+          <h2>ジョブ一覧</h2>
           {loading ? (
             <p className="loading">Loading jobs…</p>
           ) : (
@@ -168,44 +249,58 @@ export function Jobs() {
                     </tr>
                   </thead>
                   <tbody>
-                    {jobs.map((job) => (
-                      <tr
-                        key={job.id}
-                        className={selectedId === job.id ? "row-selected" : undefined}
-                        onClick={() => setSelectedId(job.id)}
-                        style={{ cursor: "pointer" }}
-                      >
-                        <td className="mono truncate" title={job.id}>
-                          {job.id.slice(0, 12)}…
-                        </td>
-                        <td>{job.job_type}</td>
-                        <td>
-                          <StatusBadge status={job.status} />
-                        </td>
-                        <td>{new Date(job.created_at).toLocaleString()}</td>
-                        <td>
-                          {!TERMINAL.has(job.status) && (
-                            <button
-                              type="button"
-                              className="btn btn-sm btn-danger"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void handleCancel(job.id);
-                              }}
-                            >
-                              Cancel
-                            </button>
-                          )}
+                    {jobs.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} className="loading">
+                          No jobs yet — start Build above
                         </td>
                       </tr>
-                    ))}
+                    ) : (
+                      jobs.map((job) => (
+                        <tr
+                          key={job.id}
+                          className={selectedId === job.id ? "row-selected" : undefined}
+                          onClick={() => setSelectedId(job.id)}
+                          style={{ cursor: "pointer" }}
+                        >
+                          <td className="mono truncate" title={job.id}>
+                            {job.id.slice(0, 12)}…
+                          </td>
+                          <td title={jobPipelineItem(job.job_type)?.summary ?? job.job_type}>
+                            {formatJobTypeLabel(job.job_type)}
+                          </td>
+                          <td>
+                            <StatusBadge status={job.status} />
+                          </td>
+                          <td>{new Date(job.created_at).toLocaleString()}</td>
+                          <td>
+                            {!TERMINAL.has(job.status) && (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-danger"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  void handleCancel(job.id);
+                                }}
+                              >
+                                Cancel
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
               <Pagination
                 page={page}
                 pageSize={pageSize}
-                total={jobs.length < pageSize ? (page - 1) * pageSize + jobs.length : page * pageSize + 1}
+                total={
+                  jobs.length < pageSize
+                    ? (page - 1) * pageSize + jobs.length
+                    : page * pageSize + 1
+                }
                 onPageChange={setPage}
               />
             </>
@@ -216,7 +311,12 @@ export function Jobs() {
           <section className="card">
             <h2>
               Live progress{" "}
-              <span style={{ fontSize: "0.75rem", color: connected ? "var(--success)" : "var(--text-muted)" }}>
+              <span
+                style={{
+                  fontSize: "0.75rem",
+                  color: connected ? "var(--success)" : "var(--text-muted)",
+                }}
+              >
                 {connected ? "● connected" : "○ disconnected"}
               </span>
             </h2>
@@ -236,9 +336,7 @@ export function Jobs() {
                       <div
                         className="progress-bar-fill"
                         style={
-                          progressPct != null
-                            ? { width: `${progressPct}%` }
-                            : undefined
+                          progressPct != null ? { width: `${progressPct}%` } : undefined
                         }
                       />
                     </div>
@@ -252,7 +350,8 @@ export function Jobs() {
                       {selectedCount != null && <span>selected={selectedCount}</span>}
                       {durationSec != null && targetDurationSec != null && (
                         <span>
-                          {(durationSec / 3600).toFixed(3)}h / {(targetDurationSec / 3600).toFixed(2)}h
+                          {(durationSec / 3600).toFixed(3)}h /{" "}
+                          {(targetDurationSec / 3600).toFixed(2)}h
                         </span>
                       )}
                       {lastUpdatedLabel && (

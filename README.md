@@ -1,130 +1,115 @@
 # FilteringCV / cv-preprocess
 
-Common Voice 向けの音声・テキスト前処理パッケージです。ライセンスは [**Apache License 2.0**](LICENSE)（`pyproject.toml` の `license` と一致）。
+Common Voice から **TTS 学習用コーパス**を作るツールです。ライセンスは [Apache License 2.0](LICENSE)。
 
-## セットアップ
+対話操作は **GUI が前提**です。CLI は CI・自動化・上級者向けです。
 
-- **Windows**: Dev Container（`.devcontainer`）の利用を推奨します。作成時に **`uv sync --extra sidon --extra gui --extra dev`** が走り、[`config/example.yaml`](config/example.yaml) の **enhance での Sidon**（`sidon_restore`・`sidon_after_enhance_split`）に必要な依存が `.venv` に入ります。**NeMo Forced Aligner 用の別 venv**（`/opt/nfa-venv`）と NeMo の `align.py` ツリーもイメージに含まれます。**MFA（conda）は `.venv` に入れていません**（NFA と SGMSE の protobuf 要件が衝突するため `.venv` に NeMo を同居させない）。
-- **Linux**: リポジトリをクローンし、既定構成に合わせるなら次で足ります。
+## すぐ始める（GUI）
 
-  ```bash
-  uv sync --extra sidon --extra gui --extra dev
-  cp config/example.yaml config/default.yaml   # ローカル用（gitignore）
-  ```
+```bash
+# Windows: Dev Container 推奨（作成時に依存が入る）
+# Linux / コンテナ内:
+uv sync --extra sidon --extra gui --extra dev
+./scripts/start-gui.sh
+```
 
-  **Dasheng**（`denoise.method: dasheng`）や **SGMSE**、**HiFi-GAN** を設定に含める場合は、それぞれ **`--extra dasheng`** / **`--extra sgmse`** / **`--extra hifigan`** を追加。**NARA-WPE＋DeepFilterNet** は **`--extra wpe_dfn`**（`deepfilterlib` のビルドに Rust / `cargo` が要ることがあります）。詳細は [docs/開発環境.md](docs/開発環境.md) を参照。
+ブラウザで **http://127.0.0.1:8765** を開きます。
 
-PyTorch は **CUDA 12.x（公式ホイール `cu128`）** 向けに `pyproject.toml` で指定しています。
+| 手順 | 画面 | やること |
+|------|------|----------|
+| 1 | **Setup** | YAML を選ぶか、`config/example.yaml` から作成（既定: `config/default.yaml`） |
+| 2 | **Config** | `input.corpus_root` や話者フィルタなどを編集して保存 |
+| 3 | **Jobs** | **Build（推奨）** を開始（scan→…→audit を一括実行） |
+| 4 | **Clips / Coverage** | 結果の確認・override・カバレッジ確認 |
 
-詳細は [docs/開発環境.md](docs/開発環境.md) を参照してください。
+詳細手順は [docs/gui.md](docs/gui.md)。環境・GPU・extra は [docs/開発環境.md](docs/開発環境.md)。
 
-### MFA（Montreal Forced Aligner）と `mfa_gate`（ホスト）
+## GUI の画面
 
-`config` の **`mfa_gate.enabled: true`** で、ノイズ除去などの音声チェーンの直後に **`mfa align`** による強制アライメント足切りが走ります（[docs/仕様.md](docs/仕様.md) §5.2）。
+| 画面 | 役割 |
+|------|------|
+| Setup | 設定 YAML の選択・新規作成（未バインド時） |
+| Dashboard | パス・最近のジョブ・run manifest |
+| **Jobs** | ビルダー段階の実行・進捗・キャンセル（下表の順番） |
+| Config | YAML の Form / テキスト編集と検証・保存 |
+| Coverage | 特徴量カバレッジ |
+| Clips | カタログ閲覧・再生・override |
+| Compare | 2 つの `work/` または出力ディレクトリの比較 |
 
-**Dev Container には MFA を入れていません。** ホストで使う場合は [conda-forge の `montreal-forced-aligner`](https://montreal-forced-aligner.readthedocs.io/en/latest/installation.html) 等で `mfa` を用意し、辞書・音響モデル（例: `japanese_mfa`）を取得してください。日本語は **spaCy + Sudachi** が必要になることがあります。G2P 比較は **`mfa_gate.mfa_to_g2p_token_map_path`**（YAML）を推奨。草案集計は **`cv-preprocess suggest-mfa-g2p-map`**、形式例は [`config/mfa_to_openjtalk_phones.example.yaml`](config/mfa_to_openjtalk_phones.example.yaml)、手順は [docs/音素照合マニフェスト.md](docs/音素照合マニフェスト.md) を参照。
+設定の切替はサイドバーの **Switch config**（実行中ジョブがあると不可）。
 
-### NeMo Forced Aligner（NFA、Dev Container）
+## Jobs の順番（ビルダー）
 
-コンテナ内に **`NFA_PYTHON`**（`/opt/nfa-venv/bin/python`）と **`NFA_ALIGN_DIR`**（`align.py` 所在）が定義されています。前処理では **`nfa_gate.enabled: true`**（**`mfa_gate` と同時に true にしない**）で NeMo NFA による足切りが走ります。拒否理由は **`nfa_*` 専用**（[docs/仕様.md](docs/仕様.md) §5.3）。既定モデル例 **`nvidia/parakeet-tdt_ctc-0.6b-ja`**（16 kHz、`model_sample_rate_hz` でリサンプル）。**`nfa_gate.persistent_worker: true`（既定）** のときは NeMo を **1 subprocess 常駐**（`cv_preprocess/audio/nfa_align_worker.py`）で動かし **モデルは初回のみロード**する。従来の「バッチごとに `align.py` 起動」は `persistent_worker: false` または環境変数 **`CV_PREPROCESS_NFA_SUBPROCESS=1`**。音素マップを使わず **NeMo の `pred_text` と参照 `text_norm` をそれぞれ OpenJTalk G2P した音素列**で照合する場合は **`text.phonemize: true`** のうえ **`align_using_pred_text: true`** と **`compare_pred_text_to_norm: true`**（`compare_tokens_to_g2p` は `false`）。詳細は [docs/仕様.md](docs/仕様.md) §5.3。
+YAML で `dataset_builder.enabled: true` のとき、Jobs では次の順で進みます。**初めては Build だけ**で十分です。
 
-**`phoneme_alignment_check`** 用の JSONLで MFA TextGrid を使う場合は、従来どおり `cv-preprocess phoneme-manifest --source mfa_textgrid …` とトークンマップ YAML が利用できます（MFA をホストに入れたとき）。
+| # | Job | 何をするか | 主な出力 |
+|---|-----|------------|----------|
+| 1 | `scan` | コーパス / TSV の件数・パスを確認 | 概要（ジョブ結果） |
+| 2 | `analyze` | 解析・品質ゲート・音声キャッシュ・カタログ作成（重い） | `work/catalog/`、`audio_cache` |
+| 3 | `plan-split` | train / val / test 分割計画 | `work/plans/split_plan.json` |
+| 4 | `select` | カバレッジに沿ったクリップ選択 | `work/plans/selection_plan.parquet` |
+| 5 | `materialize` | WAV・メタデータ等を出力ディレクトリへ書き出し | 最終コーパス一式 |
+| 6 | `audit` | 選択・分割・出力の整合性チェック | 監査結果 |
+| ★ | **`build`（推奨）** | **1〜6 を順に実行**（途中成果物があれば再開） | 上記すべて + `run_manifest.json` |
 
-### HiFi-GAN（帯域補完、`bandwidth_extension`、任意）
+個別ステージは「analyze だけやり直す」「select だけ再実行」など向けです。`Force` は既存成果物があっても再実行します。
 
-**二次パイプライン**（`cv-preprocess secondary`、[docs/追加仕様.md](docs/追加仕様.md) §11）の `config.secondary.audio_pipeline.steps` に **`type: bandwidth_extension`** を置くと、[jik876/hifi-gan](https://github.com/jik876/hifi-gan) 互換の **Generator** でメル→波形を生成し帯域を補います。YAML の例は [`config/example.yaml`](config/example.yaml) の `secondary` コメント、フィールド定義は `cv_preprocess/config/audio_steps.py` の **`BandwidthExtensionStep`** を参照してください。
+アルゴリズム・列定義は [docs/dataset-builder.md](docs/dataset-builder.md)、[docs/selection-algorithm.md](docs/selection-algorithm.md)、[docs/catalog-schema.md](docs/catalog-schema.md)。
 
-- **依存**: `uv sync --extra hifigan`（詳細は [docs/開発環境.md](docs/開発環境.md)）。
-- **重みと設定**: 学習済み Generator のチェックポイントと、同リポジトリの **`config.json`** を手元に用意し、`generator_checkpoint`（必須）と `config_json`（チェックポイントと同じディレクトリに `config.json` がある場合は省略可）を設定します。
-- **自動ダウンロードはしません**。公式配布が Drive 等のリンクになりがちで安定 URL にしにくいこと、利用するチェックポイントの選び方・ライセンス・再配布の扱いが利用者側で決まるためです。必要なファイルは各自で取得してください（方針は [docs/追加仕様.md](docs/追加仕様.md) §12）。
+## 設定で最初に触る場所
+
+Setup で作った YAML（または [`config/example.yaml`](config/example.yaml)）を Config 画面かエディタで編集します。
+
+- **`input.corpus_root`** … Common Voice の言語ルート（例: `…/ja`）
+- **`speakers.include_client_ids`** … 空なら全話者。絞るなら `client_id` を列挙
+- **`dataset_builder.enabled: true`** … ビルダー（GUI Jobs）を使う場合は true
+- 音声チェーン / 品質ゲート … [docs/仕様.md](docs/仕様.md)
+
+`config/default.yaml` と `config/*.local.yaml` は gitignore 対象です。
+
+### `validated.tsv` と話者 ID
+
+TSV はクォート付きフィールドで **物理行 ≠ 論理レコード** になり得ます。話者 ID はスプレッドシートや `wc -l` ではなく、本ツールの **scan（Jobs）** やパーサ結果を基準にしてください。
 
 ## ドキュメント
 
 | 文書 | 内容 |
 |------|------|
-| [docs/仕様.md](docs/仕様.md) | パイプライン・品質ゲート・MFA/NFA・設定キーの正。**§18（末尾付録）**は CPU 側パフォーマンスの実装メモ |
-| [docs/開発環境.md](docs/開発環境.md) | Dev Container、`uv` / GPU、optional extra（**Sidon** が既定構成。Dasheng・SGMSE・HiFi-GAN・WPE+DFN は設定に応じて追加） |
-| [docs/音素照合マニフェスト.md](docs/音素照合マニフェスト.md) | `phoneme_alignment_check` 用 JSONL と `phoneme-manifest` |
-| [docs/追加仕様.md](docs/追加仕様.md) | 多話者データセット論点・二次パイプライン・HiFi-GAN（§10–§12） |
-| [docs/architecture.md](docs/architecture.md) | データセットビルダーと Core API の全体構成 |
-| [docs/dataset-builder.md](docs/dataset-builder.md) | ビルダー CLI・設定・ワークフロー |
-| [docs/catalog-schema.md](docs/catalog-schema.md) | `work/catalog/*.parquet` の列定義 |
-| [docs/selection-algorithm.md](docs/selection-algorithm.md) | カバレッジ選択アルゴリズム |
-| [docs/gui.md](docs/gui.md) | **推奨**の対話 UI（FastAPI + React） |
-| [docs/migration-v1-v2.md](docs/migration-v1-v2.md) | 従来 `preprocess` からビルダーへの移行 |
-| [docs/rust-boundary.md](docs/rust-boundary.md) | ComputeBackend / 将来のネイティブ境界 |
+| [docs/gui.md](docs/gui.md) | GUI 起動・Setup・画面 |
+| [docs/開発環境.md](docs/開発環境.md) | Dev Container / `uv` / GPU / optional extra |
+| [docs/仕様.md](docs/仕様.md) | パイプライン・ゲート・設定キーの正 |
+| [docs/dataset-builder.md](docs/dataset-builder.md) | ビルダー段階・CLI 参照 |
+| [docs/architecture.md](docs/architecture.md) | Core API 構成 |
+| [docs/追加仕様.md](docs/追加仕様.md) | 二次パイプライン・HiFi-GAN など |
+| [docs/音素照合マニフェスト.md](docs/音素照合マニフェスト.md) | 音素マニフェスト |
+| [docs/migration-v1-v2.md](docs/migration-v1-v2.md) | レガシー `preprocess` からの移行 |
 
-## 使い方
+## オプション機能（必要なときだけ）
 
-**対話的にデータセットビルダーを使う場合（推奨）**は GUI から始めてください。
+セットアップやゲートの詳細は [docs/開発環境.md](docs/開発環境.md) / [docs/仕様.md](docs/仕様.md) へ。
 
-```bash
-uv sync --extra gui --extra sidon
-./scripts/start-gui.sh
+| 機能 | 概要 |
+|------|------|
+| **Sidon**（既定例） | enhance 用。`uv sync --extra sidon` |
+| **Dasheng / SGMSE / WPE+DFN / HiFi-GAN** | 設定に応じて対応 extra を追加 |
+| **NFA**（Dev Container） | `nfa_gate`。コンテナに別 venv あり。`mfa_gate` と同時 true 不可 |
+| **MFA**（ホスト） | Dev Container 非同梱。conda 等で `mfa` を用意 |
+| **レガシー preprocess / secondary** | `dataset_builder.enabled: false` 時の逐次前処理など。CLI 向け |
+
+## CLI（自動化・上級者向け）
+
+エントリ: `cv-preprocess`（`python -m cv_preprocess`）。ヘルプは `cv-preprocess --help`。
+
+GUI と同じ Core API を呼びます。Jobs と同じビルダー段階:
+
+```text
+scan → analyze → plan-split → select → materialize → audit
+# 一括:
+cv-preprocess build -c config/default.yaml
 ```
 
-ブラウザで **http://127.0.0.1:8765** を開き、Setup 画面で YAML を選ぶか `example.yaml` から作成します。手順は [docs/gui.md](docs/gui.md) を参照してください。
+その他（レガシー・ユーティリティ）: `preprocess`, `secondary`, `phoneme-manifest`, `suggest-mfa-g2p-map`, `suggest-nfa-g2p-map`, `dataset-partition`, `compare-runs`, `benchmark-selection`, `text-normalize`, `phonemize` など。詳細は各 `--help` と上表のドキュメント。
 
-エントリポイントは **`cv-preprocess`**（`python -m cv_preprocess` でも可）です。ヘルプは `cv-preprocess --help`、各サブコマンドは `cv-preprocess <command> --help` で確認できます。**CLI** は CI・ヘッドレス・自動化向けです。
+## 計算バックエンド
 
-### 設定ファイル
-
-- コミット用の雛形: [`config/example.yaml`](config/example.yaml) を `config/default.yaml` にコピーし、`input.corpus_root` や `speakers.include_client_ids` などを自分の Common Voice 展開先に合わせて編集します（`config/default.yaml` は `.gitignore` 対象）。別名で分ける場合は `config/mysetup.local.yaml` のようにし、`cv-preprocess … -c …` で指定してください。
-- パイプラインや品質ゲートの意味は上表の [docs/仕様.md](docs/仕様.md) を参照してください。
-- データセットビルダー: `dataset_builder.enabled: true` のうえ、対話操作は [docs/gui.md](docs/gui.md) の GUI（推奨）、自動化・上級者向けは **`cv-preprocess build -c config/default.yaml`**（詳細は [docs/dataset-builder.md](docs/dataset-builder.md)）。
-- 従来の逐次前処理だけを使う場合は `dataset_builder.enabled: false` にして `cv-preprocess preprocess` を使います。
-
-### 注意: `validated.tsv` の「行」と話者 ID（`client_id`）
-
-Common Voice の `validated.tsv` は **タブ区切りのテキスト**ですが、文中に **ダブルクォート（`"`）** などがあり **RFC 風のクォート付きフィールド**になると、**1 レコードが複数の物理行**（ファイル上の改行）にまたがることがあります。
-
-- **本パッケージ**は Python 標準の **`csv` モジュール**で読み込みます。**論理行（レコード）**の数は、エクスプローラや `wc -l`、**行単位の grep** で数えた物理行数より少なくなることがあります。
-- **LibreOffice Calc** などで開く場合、テキストインポートの **「文字列の区切り」** を **`"`** にするか **空**にするかで、行の切り方が変わります。区切りを空に近い設定にすると **改行のたびに行が分かれ**、ある物理行の先頭に **本当の `client_id` 列ではない**文字列（他レコードのクォート内の続き）が **1 列目に見える**ことがあります。スプレッドシートや grep で「見つかった」からといって、パーサ上の話者 ID として存在するとは限りません。
-- **`speakers.include_client_ids`** に使う値は、**本ツールの解釈（`cv-preprocess scan` の件数・警告、`load_validated_tsv` の結果）を基準**にしてください。`scan` では物理行と論理行が一致しないとき、説明付きの警告が出ます。
-
-### よく使うコマンド
-
-| コマンド | 説明 |
-|----------|------|
-| `cv-preprocess scan -c <設定.yaml>` | コーパスを走査し、件数・パスなどの概要を JSON で標準出力に出します（本処理の前に確認用）。 |
-| `cv-preprocess preprocess -c <設定.yaml>` | 設定に従い前処理を実行し、終了時にレポートを JSON で標準出力に出します。CI やログ保存向けに進捗バーを止める場合は `--no-progress` を付けます。 |
-| `cv-preprocess phoneme-manifest -c <設定.yaml> …` | **`phoneme_alignment_check` 用 JSONL** を生成。`--source g2p_text`（既定）で **OpenJTalk G2P（preprocess と同一）**。`mfa_textgrid` とトークンマップ YAML も可。 [docs/音素照合マニフェスト.md](docs/音素照合マニフェスト.md) |
-| `cv-preprocess suggest-mfa-g2p-map -c <設定.yaml> --mfa-textgrid-root <dir> -o <out.yaml>` | TextGrid の phones と G2P を **同じ TSV 行**で突き合わせ、**`mfa_to_g2p_token_map_path` 用 YAML の草案**（投票・閾値）と `*_report.json` を出す。近似なので人手レビュー必須。`--help` で戦略・閾値。 |
-| `cv-preprocess suggest-nfa-g2p-map -c <設定.yaml> … -o <out.yaml>` | NFA（CTM）トークンと G2P を突き合わせ、**`nfa_to_g2p_token_map_path` 用 YAML の草案**を出す。人手レビュー前提。 |
-| `cv-preprocess secondary -c <設定.yaml>` | 一次 `preprocess` の出力に対し二次音声チェーンと再品質ゲートを適用（`config.secondary` が必要。[docs/追加仕様.md](docs/追加仕様.md) §11）。 |
-| `cv-preprocess metadata-jsonl-to-validated-tsv -m <metadata.jsonl> [-o <validated.tsv>]` | `metadata.jsonl` から LJSpeech 互換の `validated.tsv`（3 列・ヘッダなし）を生成します。 |
-| `cv-preprocess dataset-partition -m <metadata.jsonl> -o <out_dir> …` | `--group-by` で `quality_tier`・`split`・`split_quality_tier` などに応じて WAV をバケット別サブフォルダへ集約。`--only-tiers`・`--min-quality-score` 等で好みの抽出。各バケットに `metadata.jsonl` と `validated.tsv`（既定 WAV はシンボリックリンク）。詳細は `--help`。 |
-| `cv-preprocess text-normalize "<文>"` | TTS 向けに正規化したテキストを 1 行で出力します（デバッグ用）。 |
-| `cv-preprocess phonemize "<文>"` | 正規化のうえ G2P した音素列を出力します。読みをカナで出す場合は `--kana` を付けます。 |
-
-本番の一連の流れは、**設定を用意 → 確認 → ビルド** です。対話操作は GUI（[docs/gui.md](docs/gui.md)）、CI やスクリプトでは **`scan` → `build`（ビルダー）または `preprocess`（レガシー）** です。
-
-### データセットビルダー（`dataset_builder.enabled: true`）
-
-YAML で `dataset_builder.enabled: true` を指定すると、カタログ Parquet・カバレッジ選択・分割・書き出しのビルダーパイプラインが有効になります。対話的な操作は [docs/gui.md](docs/gui.md) を推奨します。下表の CLI は自動化・段階実行・上級者向けです。詳細は [docs/dataset-builder.md](docs/dataset-builder.md) を参照してください。
-
-| コマンド | 説明 |
-|----------|------|
-| `cv-preprocess analyze -c <設定.yaml>` | コーパスを解析し `work/catalog/` と音声キャッシュを生成 |
-| `cv-preprocess plan-split -c <設定.yaml>` | train/val/test 分割計画を作成 |
-| `cv-preprocess select -c <設定.yaml>` | カタログから貪欲カバレッジ選択 |
-| `cv-preprocess materialize -c <設定.yaml>` | 選択クリップを出力ディレクトリへ書き出し |
-| `cv-preprocess audit -c <設定.yaml>` | 選択・分割の整合性チェック |
-| `cv-preprocess build -c <設定.yaml> [--force]` | 上記を段階的にオーケストレート（途中成果物があれば再開） |
-| `cv-preprocess compare-runs <left> <right>` | 2 つの `work/` または出力ディレクトリを比較 |
-| `cv-preprocess benchmark-selection --catalog work/catalog/clips.parquet [--repeat 3]` | 選択スコアリング・貪欲選択のベンチマーク（JSON タイミング） |
-
-`dataset_builder.enabled: true` のとき `cv-preprocess preprocess` は警告のうえ `build` に委譲します。従来の逐次前処理だけを使う場合は `enabled: false` のままにしてください。
-
-#### GUI（推奨・対話操作用）
-
-```bash
-uv sync --extra gui --extra sidon
-./scripts/start-gui.sh
-```
-
-対話的にビルダーを操作する際の推奨エントリです。`start-gui.sh` は必要ならフロントをビルドし、`cv-preprocess gui` を起動します（既定 `127.0.0.1:8765`）。`-c` は省略可能（前回の設定は `.filteringcv/last_config.json`、未設定時は Setup 画面）。直接起動する場合: `cv-preprocess gui -c <設定.yaml>`。手順は [docs/gui.md](docs/gui.md) を参照。
-
-#### 計算バックエンド
-
-`compute.backend: auto`（既定）で Polars 実装を使用し、不可時は Python にフォールバックします。`run_manifest.json` にステージ時間とリソース使用量が記録されます。
+`compute.backend: auto`（既定）で Polars、不可時は Python にフォールバック。`run_manifest.json` にステージ時間などが記録されます。

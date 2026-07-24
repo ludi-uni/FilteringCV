@@ -60,13 +60,23 @@ cv-preprocess gui
 
 - **Setup** — bind an existing YAML or create from `example.yaml` (shown until a config is bound)
 - **Dashboard** — recent runs and stage status
-- **Jobs** — queued/running/completed jobs with cancel and live progress
+- **Jobs** — pipeline stages in order (`scan` → `analyze` → `plan-split` → `select` → `materialize` → `audit`), plus **`build`** (recommended one-shot). Each row shows what the stage does and what it produces; start here with **Build** for a first run
 - **Config** — edit the loaded YAML in Form or YAML mode; **Save & overwrite YAML** writes back to the original config path after Pydantic validation. Search and chips (Filters / Builder / Audio / Gates / Changed) help focus speaker filters and related settings
 - **Coverage** — feature distribution vs pool target
 - **Clips** — paginated catalog browser with audio preview
 - **Run Comparison** — diff two `work/` or output directories
 
 Use **Switch config** in the layout to unbind and return to Setup (blocked while jobs are active).
+
+### Jobs order (quick reference)
+
+1. `scan` — corpus / TSV sanity check
+2. `analyze` — catalog + audio cache (heavy)
+3. `plan-split` — train/val/test plan
+4. `select` — coverage selection
+5. `materialize` — write final WAV/metadata
+6. `audit` — integrity checks
+★ `build` — runs 1–6 with resume (default choice in the UI)
 
 ## Security defaults
 

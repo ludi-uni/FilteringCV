@@ -195,6 +195,7 @@ export interface SessionConfigsResponse {
   configs: SessionConfigItem[];
 }
 
+/** Ordered job ids (see `frontend/src/jobs/pipeline.ts` for labels/descriptions). */
 export const JOB_TYPES: JobType[] = [
   "scan",
   "analyze",
