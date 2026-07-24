@@ -6,14 +6,20 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from cv_preprocess.jobs.models import TERMINAL_JOB_STATUSES
 from cv_preprocess.jobs.progress import ProgressHub
-from cv_preprocess.jobs.store import JobStore
 
 
-def create_websocket_router(hub: ProgressHub, store: JobStore) -> APIRouter:
+def create_websocket_router(hub: ProgressHub) -> APIRouter:
     ws_router = APIRouter()
 
     @ws_router.websocket("/ws/jobs/{job_id}")
     async def job_progress_socket(websocket: WebSocket, job_id: str) -> None:
+        session = getattr(websocket.app.state, "app_session", None)
+        app_state = getattr(session, "app_state", None) if session is not None else None
+        if app_state is None:
+            await websocket.close(code=1013)
+            return
+
+        store = app_state.job_store
         try:
             store.get_job(job_id)
         except KeyError:

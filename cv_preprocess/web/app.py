@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from cv_preprocess.jobs.progress import ProgressHub
-from cv_preprocess.web.dependencies import build_app_state
+from cv_preprocess.web.dependencies import AppSession, build_app_state
 from cv_preprocess.web.routes import (
     audio,
     catalog,
@@ -26,17 +26,23 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 
 
-def create_app(config_path: Path, project_root: Path) -> FastAPI:
-    app_state = build_app_state(config_path, project_root)
+def create_app(config_path: Path | None, project_root: Path) -> FastAPI:
+    project_root = project_root.resolve()
+    app_state = build_app_state(config_path, project_root) if config_path is not None else None
+    app_session = AppSession(project_root=project_root, app_state=app_state)
     progress_hub = ProgressHub()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        app_state.job_store.mark_stale_running_as_interrupted()
-        app.state.app_state = app_state
+        if app_session.app_state is not None:
+            app_session.app_state.job_store.mark_stale_running_as_interrupted()
+        app.state.app_session = app_session
         app.state.progress_hub = progress_hub
+        # backward-compat alias; prefer app_session
+        app.state.app_state = app_session.app_state
         yield
-        app_state.job_runner.shutdown()
+        if app_session.app_state is not None:
+            app_session.app_state.job_runner.shutdown()
 
     app = FastAPI(title="FilteringCV Dataset Builder", lifespan=lifespan)
     app.add_middleware(
@@ -59,7 +65,7 @@ def create_app(config_path: Path, project_root: Path) -> FastAPI:
     app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
     app.include_router(config_api.router, prefix="/api/config", tags=["config"])
 
-    ws_router = create_websocket_router(progress_hub, app_state.job_store)
+    ws_router = create_websocket_router(progress_hub)
     app.include_router(ws_router)
 
     frontend_dist = (project_root / "frontend" / "dist").resolve()

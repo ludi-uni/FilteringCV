@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from cv_preprocess.config import PipelineConfig
-from cv_preprocess.web.dependencies import build_app_state, get_app_state
+from cv_preprocess.web.dependencies import build_app_state, get_app_session, get_app_state
 
 router = APIRouter()
 
@@ -209,6 +209,8 @@ def save_config(request: Request, body: ConfigSaveRequest) -> ConfigSaveResponse
         job_runner=state.job_runner,
     )
     refreshed.job_runner.config_path = refreshed.config_path
+    session = get_app_session(request)
+    session.app_state = refreshed
     request.app.state.app_state = refreshed
 
     return ConfigSaveResponse(

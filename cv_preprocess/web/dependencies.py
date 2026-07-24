@@ -24,11 +24,24 @@ class AppState:
     audio_cache_dir: Path
 
 
-def get_app_state(request: Request) -> AppState:
-    state = getattr(request.app.state, "app_state", None)
-    if state is None:
+@dataclass
+class AppSession:
+    project_root: Path
+    app_state: AppState | None = None
+
+
+def get_app_session(request: Request) -> AppSession:
+    session = getattr(request.app.state, "app_session", None)
+    if session is None:
         raise HTTPException(status_code=500, detail="application not initialized")
-    return state
+    return session
+
+
+def get_app_state(request: Request) -> AppState:
+    session = get_app_session(request)
+    if session.app_state is None:
+        raise HTTPException(status_code=503, detail="config not bound")
+    return session.app_state
 
 
 def reject_path_traversal(value: str) -> None:
