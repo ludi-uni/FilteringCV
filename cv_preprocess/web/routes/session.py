@@ -79,7 +79,13 @@ def _require_yaml_file(path: Path) -> None:
         raise HTTPException(status_code=404, detail="config file not found")
 
 
+def _ensure_no_active_jobs(session: AppSession, action: str) -> None:
+    if session.app_state is not None and session.app_state.job_store.has_active_jobs():
+        raise HTTPException(status_code=409, detail=f"active jobs prevent {action}")
+
+
 def _bind_or_raise(session: AppSession, config_path: Path) -> AppState:
+    _ensure_no_active_jobs(session, "rebind")
     try:
         return bind_session(session, config_path)
     except ValidationError as exc:
