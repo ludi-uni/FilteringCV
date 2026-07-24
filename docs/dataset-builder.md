@@ -4,11 +4,15 @@ The dataset builder constructs a curated TTS corpus under quality, coverage, spe
 
 ## Quick start
 
+**Interactive (recommended):** after `uv sync --extra sidon --extra gui --extra dev`, run `./scripts/start-gui.sh` and use the Setup screen to pick or create a config. See [gui.md](gui.md).
+
+**CLI / automation:**
+
 ```bash
-# 1. Copy the template and edit corpus paths / speakers
+# 1. Copy the template and edit corpus paths / speakers (optional if using GUI Setup)
 cp config/example.yaml config/default.yaml
 
-# 2. Install Sidon (and optionally GUI) extras
+# 2. Install Sidon (and GUI if needed)
 uv sync --extra sidon --extra gui --extra dev
 
 # 3. Scan then build

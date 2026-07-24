@@ -5,7 +5,7 @@ FilteringCV (`cv-preprocess`) is a Common Voice preprocessing and dataset-buildi
 ## Layers
 
 ```text
-CLI (Typer) / GUI (FastAPI + React, optional)
+CLI (Typer) / GUI (FastAPI + React — recommended for interactive ops)
         │
         ▼
 application/*  — Core API (scan, analyze, select, materialize, audit, build)
@@ -22,7 +22,7 @@ application/*  — Core API (scan, analyze, select, materialize, audit, build)
 pipeline/* + audio/* + text/*  — Existing decode, gates, MFA/NFA, G2P
 ```
 
-CLI and GUI both call **Core API** functions in `cv_preprocess.application`. Neither parses the other's output format.
+CLI and GUI both call **Core API** functions in `cv_preprocess.application`. Neither parses the other's output format. For day-to-day interactive builder work, prefer the GUI ([gui.md](gui.md)); use the CLI for automation and CI.
 
 ## Disposition model
 

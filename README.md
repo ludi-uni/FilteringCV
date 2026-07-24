@@ -50,19 +50,28 @@ PyTorch は **CUDA 12.x（公式ホイール `cu128`）** 向けに `pyproject.t
 | [docs/dataset-builder.md](docs/dataset-builder.md) | ビルダー CLI・設定・ワークフロー |
 | [docs/catalog-schema.md](docs/catalog-schema.md) | `work/catalog/*.parquet` の列定義 |
 | [docs/selection-algorithm.md](docs/selection-algorithm.md) | カバレッジ選択アルゴリズム |
-| [docs/gui.md](docs/gui.md) | 任意 GUI extra（FastAPI + React） |
+| [docs/gui.md](docs/gui.md) | **推奨**の対話 UI（FastAPI + React） |
 | [docs/migration-v1-v2.md](docs/migration-v1-v2.md) | 従来 `preprocess` からビルダーへの移行 |
 | [docs/rust-boundary.md](docs/rust-boundary.md) | ComputeBackend / 将来のネイティブ境界 |
 
 ## 使い方
 
-エントリポイントは **`cv-preprocess`**（`python -m cv_preprocess` でも可）です。ヘルプは `cv-preprocess --help`、各サブコマンドは `cv-preprocess <command> --help` で確認できます。
+**対話的にデータセットビルダーを使う場合（推奨）**は GUI から始めてください。
+
+```bash
+uv sync --extra gui --extra sidon
+./scripts/start-gui.sh
+```
+
+ブラウザで **http://127.0.0.1:8765** を開き、Setup 画面で YAML を選ぶか `example.yaml` から作成します。手順は [docs/gui.md](docs/gui.md) を参照してください。
+
+エントリポイントは **`cv-preprocess`**（`python -m cv_preprocess` でも可）です。ヘルプは `cv-preprocess --help`、各サブコマンドは `cv-preprocess <command> --help` で確認できます。**CLI** は CI・ヘッドレス・自動化向けです。
 
 ### 設定ファイル
 
 - コミット用の雛形: [`config/example.yaml`](config/example.yaml) を `config/default.yaml` にコピーし、`input.corpus_root` や `speakers.include_client_ids` などを自分の Common Voice 展開先に合わせて編集します（`config/default.yaml` は `.gitignore` 対象）。別名で分ける場合は `config/mysetup.local.yaml` のようにし、`cv-preprocess … -c …` で指定してください。
 - パイプラインや品質ゲートの意味は上表の [docs/仕様.md](docs/仕様.md) を参照してください。
-- データセットビルダー（推奨）: `dataset_builder.enabled: true` のうえ **`cv-preprocess build -c config/default.yaml`**（詳細は [docs/dataset-builder.md](docs/dataset-builder.md)）。
+- データセットビルダー: `dataset_builder.enabled: true` のうえ、対話操作は [docs/gui.md](docs/gui.md) の GUI（推奨）、自動化・上級者向けは **`cv-preprocess build -c config/default.yaml`**（詳細は [docs/dataset-builder.md](docs/dataset-builder.md)）。
 - 従来の逐次前処理だけを使う場合は `dataset_builder.enabled: false` にして `cv-preprocess preprocess` を使います。
 
 ### 注意: `validated.tsv` の「行」と話者 ID（`client_id`）
@@ -88,11 +97,11 @@ Common Voice の `validated.tsv` は **タブ区切りのテキスト**ですが
 | `cv-preprocess text-normalize "<文>"` | TTS 向けに正規化したテキストを 1 行で出力します（デバッグ用）。 |
 | `cv-preprocess phonemize "<文>"` | 正規化のうえ G2P した音素列を出力します。読みをカナで出す場合は `--kana` を付けます。 |
 
-本番の一連の流れは、**設定を用意 → `scan` で確認 → `build`（ビルダー）または `preprocess`（レガシー）** です。
+本番の一連の流れは、**設定を用意 → 確認 → ビルド** です。対話操作は GUI（[docs/gui.md](docs/gui.md)）、CI やスクリプトでは **`scan` → `build`（ビルダー）または `preprocess`（レガシー）** です。
 
 ### データセットビルダー（`dataset_builder.enabled: true`）
 
-YAML で `dataset_builder.enabled: true` を指定すると、カタログ Parquet・カバレッジ選択・分割・書き出しのビルダーパイプラインが有効になります。詳細は [docs/dataset-builder.md](docs/dataset-builder.md) を参照してください。
+YAML で `dataset_builder.enabled: true` を指定すると、カタログ Parquet・カバレッジ選択・分割・書き出しのビルダーパイプラインが有効になります。対話的な操作は [docs/gui.md](docs/gui.md) を推奨します。下表の CLI は自動化・段階実行・上級者向けです。詳細は [docs/dataset-builder.md](docs/dataset-builder.md) を参照してください。
 
 | コマンド | 説明 |
 |----------|------|
@@ -107,13 +116,14 @@ YAML で `dataset_builder.enabled: true` を指定すると、カタログ Parqu
 
 `dataset_builder.enabled: true` のとき `cv-preprocess preprocess` は警告のうえ `build` に委譲します。従来の逐次前処理だけを使う場合は `enabled: false` のままにしてください。
 
-#### GUI（任意）
+#### GUI（推奨・対話操作用）
 
 ```bash
 uv sync --extra gui --extra sidon
+./scripts/start-gui.sh
 ```
 
-FastAPI バックエンド用の依存が入ります。`frontend/` がある場合は `cd frontend && pnpm install && pnpm build` で静的アセットをビルドし、`cv-preprocess gui -c <設定.yaml>` で起動します（既定 `127.0.0.1:8765`）。手順は [docs/gui.md](docs/gui.md) を参照。
+対話的にビルダーを操作する際の推奨エントリです。`start-gui.sh` は必要ならフロントをビルドし、`cv-preprocess gui` を起動します（既定 `127.0.0.1:8765`）。`-c` は省略可能（前回の設定は `.filteringcv/last_config.json`、未設定時は Setup 画面）。直接起動する場合: `cv-preprocess gui -c <設定.yaml>`。手順は [docs/gui.md](docs/gui.md) を参照。
 
 #### 計算バックエンド
 
