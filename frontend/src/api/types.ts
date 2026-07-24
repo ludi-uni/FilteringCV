@@ -181,6 +181,20 @@ export interface ConfigSaveResponse {
   message: string;
 }
 
+export interface SessionState {
+  bound: boolean;
+  config_path: string | null;
+  project_root: string;
+}
+
+export interface SessionConfigItem {
+  path: string;
+}
+
+export interface SessionConfigsResponse {
+  configs: SessionConfigItem[];
+}
+
 export const JOB_TYPES: JobType[] = [
   "scan",
   "analyze",

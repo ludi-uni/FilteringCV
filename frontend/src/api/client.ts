@@ -13,6 +13,8 @@ import type {
   JobSummary,
   OverrideListResponse,
   ProgressRecord,
+  SessionConfigsResponse,
+  SessionState,
 } from "./types";
 
 export class ApiError extends Error {
@@ -38,9 +40,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     let detail = response.statusText;
     try {
-      const payload = (await response.json()) as { detail?: string };
-      if (payload.detail) {
-        detail = payload.detail;
+      const payload = (await response.json()) as { detail?: unknown };
+      if (payload.detail != null) {
+        detail = Array.isArray(payload.detail)
+          ? payload.detail.map(String).join("; ")
+          : String(payload.detail);
       }
     } catch {
       // ignore parse errors
@@ -138,6 +142,28 @@ export const api = {
       .split("/")
       .map((segment) => encodeURIComponent(segment))
       .join("/")}`,
+
+  session: () => request<SessionState>("/api/session"),
+
+  listSessionConfigs: () => request<SessionConfigsResponse>("/api/session/configs"),
+
+  bindSession: (path: string) =>
+    request<SessionState>("/api/session/bind", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+
+  createSession: (body: { path?: string; overwrite?: boolean }) =>
+    request<SessionState>("/api/session/create", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  unbindSession: () =>
+    request<SessionState>("/api/session/unbind", {
+      method: "POST",
+      body: "{}",
+    }),
 };
 
 export function jobWebSocketUrl(jobId: string): string {

@@ -10,7 +10,17 @@ const NAV: Array<{ to: string; label: string; end?: boolean }> = [
   { to: "/compare", label: "Compare" },
 ];
 
-export function Layout() {
+interface LayoutProps {
+  configPath?: string | null;
+  onSwitchConfig?: () => void;
+  switchDisabled?: boolean;
+}
+
+export function Layout({
+  configPath = null,
+  onSwitchConfig,
+  switchDisabled = false,
+}: LayoutProps) {
   return (
     <div className={styles.shell}>
       <aside className={styles.sidebar}>
@@ -33,7 +43,22 @@ export function Layout() {
           ))}
         </nav>
         <footer className={styles.footer}>
-          Dataset builder ops
+          {configPath && (
+            <div className={styles.configPath} title={configPath}>
+              {configPath}
+            </div>
+          )}
+          {onSwitchConfig && (
+            <button
+              type="button"
+              className={`btn btn-sm ${styles.switchBtn}`}
+              disabled={switchDisabled}
+              onClick={onSwitchConfig}
+            >
+              Switch config
+            </button>
+          )}
+          <div>Dataset builder ops</div>
         </footer>
       </aside>
       <main className={styles.main}>
