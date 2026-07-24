@@ -649,12 +649,11 @@ def cmd_gui(
 
     from cv_preprocess.web.app import create_app
     from cv_preprocess.web.last_config import to_project_relative, write_last_config
-    from cv_preprocess.web.session_resolve import resolve_gui_config_path
+    from cv_preprocess.web.session_resolve import resolve_gui_startup_config
 
     root = project_root.resolve() if project_root is not None else _default_gui_project_root(config)
-    resolved = resolve_gui_config_path(project_root=root, cli_config=config)
-    if config is not None and resolved is not None:
-        write_last_config(root, to_project_relative(root, resolved))
+    # Soft-fail unloadable last_config (no -c); explicit -c still fails in create_app.
+    resolved = resolve_gui_startup_config(project_root=root, cli_config=config)
     dist = root / "frontend" / "dist"
     if not dist.is_dir():
         typer.echo(
@@ -663,6 +662,9 @@ def cmd_gui(
             err=True,
         )
     app = create_app(resolved, root)
+    # Persist last_config only after create_app succeeds (validates explicit -c).
+    if config is not None and resolved is not None:
+        write_last_config(root, to_project_relative(root, resolved))
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

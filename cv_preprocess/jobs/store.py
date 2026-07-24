@@ -185,7 +185,11 @@ class JobStore:
             return int(cursor.rowcount)
 
     def has_active_jobs(self) -> bool:
-        active = ("queued", "running", "cancelling")
+        active = (
+            JobStatus.QUEUED.value,
+            JobStatus.RUNNING.value,
+            JobStatus.CANCELLING.value,
+        )
         with self._connect() as conn:
             row = conn.execute(
                 f"SELECT 1 FROM jobs WHERE status IN ({','.join('?' * len(active))}) LIMIT 1",

@@ -61,9 +61,11 @@ def _sync_app_state_alias(request: Request, state: AppState | None) -> None:
 
 
 def bind_session(session: AppSession, config_path: Path) -> AppState:
-    if session.app_state is not None:
-        session.app_state.job_runner.shutdown()
+    # Build/validate first so a bad config leaves the existing session intact.
     state = build_app_state(config_path, session.project_root)
+    previous = session.app_state
+    if previous is not None:
+        previous.job_runner.shutdown()
     session.app_state = state
     write_last_config(
         session.project_root,
@@ -146,6 +148,7 @@ def create_config(request: Request, body: CreateRequest) -> SessionStatusRespons
         raise HTTPException(status_code=400, detail="config path must be a .yaml or .yml file")
     if target.exists() and not body.overwrite:
         raise HTTPException(status_code=409, detail="config already exists")
+    _ensure_no_active_jobs(session, "create")
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
     _bind_or_raise(session, target)

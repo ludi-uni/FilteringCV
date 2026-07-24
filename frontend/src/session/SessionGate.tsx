@@ -16,31 +16,40 @@ const SWITCH_BLOCKED_MESSAGE = "Finish or cancel jobs before switching";
 export function SessionGate() {
   const [session, setSession] = useState<SessionState | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
 
   const refresh = useCallback(async () => {
     const next = await api.session();
     setSession(next);
+    setLoadError(null);
     return next;
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const next = await api.session();
-        if (!cancelled) setSession(next);
-      } catch {
-        if (!cancelled) setSession(null);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+  const loadInitialSession = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const next = await api.session();
+      setSession(next);
+    } catch (err) {
+      setSession(null);
+      setLoadError(
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Failed to load session",
+      );
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadInitialSession();
+  }, [loadInitialSession]);
 
   async function handleBound() {
     setSwitchError(null);
@@ -68,7 +77,20 @@ export function SessionGate() {
     return <p className="loading" style={{ padding: "2rem" }}>Loading…</p>;
   }
 
-  if (!session?.bound) {
+  // Network/API failure: show error + retry. Do not treat as unbound Setup.
+  if (loadError || session == null) {
+    return (
+      <div style={{ padding: "1.5rem 2rem", maxWidth: "720px", margin: "0 auto" }}>
+        <div className="error-banner">{loadError ?? "Failed to load session"}</div>
+        <button type="button" className="btn btn-primary" onClick={() => void loadInitialSession()}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  // Only show Setup when the API explicitly reports bound: false.
+  if (!session.bound) {
     return (
       <div style={{ padding: "1.5rem 2rem", maxWidth: "720px", margin: "0 auto" }}>
         <Setup onBound={handleBound} />

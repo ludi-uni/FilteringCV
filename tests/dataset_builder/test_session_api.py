@@ -73,6 +73,22 @@ def test_bind_invalid_yaml_400(project: Path) -> None:
         assert resp.status_code == 400
 
 
+def test_bind_invalid_preserves_existing_session(project: Path) -> None:
+    cfg = project / "config" / "default.yaml"
+    cfg.write_text(MINIMAL, encoding="utf-8")
+    bad = project / "config" / "bad.yaml"
+    bad.write_text("dataset_builder: []\n", encoding="utf-8")
+    with TestClient(create_app(cfg, project)) as client:
+        assert client.get("/api/dashboard").status_code == 200
+        resp = client.post("/api/session/bind", json={"path": "config/bad.yaml"})
+        assert resp.status_code == 400
+        status = client.get("/api/session")
+        assert status.status_code == 200
+        assert status.json()["bound"] is True
+        assert status.json()["config_path"] == "config/default.yaml"
+        assert client.get("/api/dashboard").status_code == 200
+
+
 def test_path_traversal_rejected(project: Path) -> None:
     with TestClient(create_app(None, project)) as client:
         resp = client.post("/api/session/bind", json={"path": "../outside.yaml"})
@@ -109,13 +125,18 @@ def test_bind_blocked_when_job_active(project: Path) -> None:
 def test_create_blocked_when_job_active(project: Path) -> None:
     cfg = project / "config" / "default.yaml"
     cfg.write_text(MINIMAL, encoding="utf-8")
+    other = project / "config" / "other.yaml"
     with TestClient(create_app(cfg, project)) as client:
         from unittest.mock import patch
         with patch("cv_preprocess.jobs.runner.JobRunner.start_job"):
             job = client.post("/api/jobs", json={"job_type": "scan", "force": False})
             assert job.status_code == 200
+        assert not other.exists()
         resp = client.post(
             "/api/session/create",
             json={"path": "config/other.yaml", "overwrite": False},
         )
         assert resp.status_code == 409
+        assert not other.exists()
+        assert client.get("/api/session").json()["bound"] is True
+        assert client.get("/api/session").json()["config_path"] == "config/default.yaml"
