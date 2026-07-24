@@ -46,13 +46,24 @@ YAML で `dataset_builder.enabled: true` のとき、Jobs では次の順で進�
 |---|-----|------------|----------|
 | 1 | `scan` | コーパス / TSV の件数・パスを確認 | 概要（ジョブ結果） |
 | 2 | `analyze` | 解析・品質ゲート・音声キャッシュ・カタログ作成（重い） | `work/catalog/`、`audio_cache` |
-| 3 | `plan-split` | train / val / test 分割計画 | `work/plans/split_plan.json` |
-| 4 | `select` | カバレッジに沿ったクリップ選択 | `work/plans/selection_plan.parquet` |
+| 3 | `plan-split` | train / val / test の分割計画（意味はプロトコル依存・下表） | `work/plans/split_plan.json` |
+| 4 | `select` | カバレッジに沿ったクリップ選択（同上） | `work/plans/selection_plan.parquet` |
 | 5 | `materialize` | WAV・メタデータ等を出力ディレクトリへ書き出し | 最終コーパス一式 |
 | 6 | `audit` | 選択・分割・出力の整合性チェック | 監査結果 |
 | ★ | **`build`（推奨）** | **1〜6 を順に実行**（途中成果物があれば再開） | 上記すべて + `run_manifest.json` |
 
 個別ステージは「analyze だけやり直す」「select だけ再実行」など向けです。`Force` は既存成果物があっても再実行します。
+
+### `plan-split` と `select` の関係（よくある疑問）
+
+Jobs 上の順番は常に **`plan-split` → `select`** ですが、**中身の「どちらが先か」は `dataset_builder.split.protocol` で変わります**。
+
+| プロトコル | 実質の流れ | なぜ |
+|------------|------------|------|
+| **`unseen_speaker`（既定でよく使う）** | **先に話者を train/val/test に割当 → 各バケット内で select** | 同一話者が train と val/test に出ないようにするため。全体を先に select すると、あとで話者を分けたときにカバレッジが崩れる |
+| **`seen_speaker` / `single_speaker`** | **先に全体で select → 選ばれたクリップに split を付与** | 話者またぎを許す（または単話者）ので、クリップ割当は選択後でよい |
+
+「select してから split した方がいいのでは？」は後者ではその感覚どおりです。**話者を分けたい `unseen_speaker` では、今の順（話者計画 → バケット内選択）が意図どおり**です。設定の `split.protocol` を確認してください。詳細は [docs/dataset-builder.md](docs/dataset-builder.md)。
 
 アルゴリズム・列定義は [docs/dataset-builder.md](docs/dataset-builder.md)、[docs/selection-algorithm.md](docs/selection-algorithm.md)、[docs/catalog-schema.md](docs/catalog-schema.md)。
 
@@ -82,6 +93,7 @@ TSV はクォート付きフィールドで **物理行 ≠ 論理レコード**
 | [docs/architecture.md](docs/architecture.md) | Core API 構成 |
 | [docs/追加仕様.md](docs/追加仕様.md) | 二次パイプライン・HiFi-GAN など |
 | [docs/音素照合マニフェスト.md](docs/音素照合マニフェスト.md) | 音素マニフェスト |
+| [docs/coverage-automation.md](docs/coverage-automation.md) | 希少音素カバレッジ自動確保 |
 | [docs/migration-v1-v2.md](docs/migration-v1-v2.md) | レガシー `preprocess` からの移行 |
 
 ## オプション機能（必要なときだけ）
@@ -109,6 +121,18 @@ cv-preprocess build -c config/default.yaml
 ```
 
 その他（レガシー・ユーティリティ）: `preprocess`, `secondary`, `phoneme-manifest`, `suggest-mfa-g2p-map`, `suggest-nfa-g2p-map`, `dataset-partition`, `compare-runs`, `benchmark-selection`, `text-normalize`, `phonemize` など。詳細は各 `--help` と上表のドキュメント。
+
+### 希少音素カバレッジ自動化
+
+目標件数に届かない音素・モーラ等を、全件重解析せずに補う機能です。
+
+```bash
+cv-preprocess coverage-index -c config/default.yaml -o output/coverage/clip-index.jsonl
+cv-preprocess coverage-plan  -c config/default.yaml --index output/coverage/clip-index.jsonl -o output/coverage/plan.json
+cv-preprocess coverage-run   -c config/default.yaml --index output/coverage/clip-index.jsonl -o output/coverage/run-001 --dry-run
+```
+
+詳細は [docs/coverage-automation.md](docs/coverage-automation.md)。
 
 ## 計算バックエンド
 

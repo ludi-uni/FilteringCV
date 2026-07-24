@@ -145,6 +145,10 @@ dataset_builder:
 compute:
   backend: auto
 
+# 希少音素カバレッジ自動化（任意）: docs/coverage-automation.md
+# coverage:
+#   enabled: false
+
 # 二次パイプライン（任意）: cv-preprocess secondary
 # docs/追加仕様.md §11–§12、BandwidthExtensionStep（uv sync --extra hifigan）
 # secondary:

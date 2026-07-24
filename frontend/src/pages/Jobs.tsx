@@ -132,6 +132,10 @@ export function Jobs() {
           <p className="job-pipeline-intro">
             通常は上から下へ進みます。<code>Build</code> は同じ順序をオーケストレートし、途中成果物があれば再開します。
             個別ステージは再実行や途中からのやり直し用です。
+            Jobs 上は常に <code>plan-split</code> → <code>select</code> ですが、
+            <strong>unseen_speaker</strong> では「話者割当→各バケット内 select」、
+            <strong>seen_speaker / single_speaker</strong> では「全体 select→あとでクリップに split」です
+            （「select してから split」は後者向けの感覚）。
           </p>
           <ol className="job-pipeline">
             {JOB_PIPELINE.filter((item) => item.kind === "stage").map((item) => (

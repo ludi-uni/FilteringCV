@@ -21,6 +21,7 @@ from cv_preprocess.config.input import InputConfig, SpeakersConfig
 from cv_preprocess.config.output_split import OutputConfig, SplitConfig
 from cv_preprocess.config.dataset_builder import ComputeConfig, DatasetBuilderConfig
 from cv_preprocess.config.text import TextConfig
+from cv_preprocess.config.coverage import CoverageAutomationConfig
 
 class PipelineConfig(BaseModel):
     schema_version: int = 1
@@ -49,6 +50,7 @@ class PipelineConfig(BaseModel):
     phoneme_manifest: PhonemeManifestPipelineConfig | None = None
     dataset_builder: DatasetBuilderConfig = Field(default_factory=DatasetBuilderConfig)
     compute: ComputeConfig = Field(default_factory=ComputeConfig)
+    coverage: CoverageAutomationConfig = Field(default_factory=CoverageAutomationConfig)
 
     @model_validator(mode="before")
     @classmethod

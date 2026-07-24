@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,10 +19,18 @@ from cv_preprocess.catalog.cache import cached_wav_path, pipeline_cache_key, wri
 from cv_preprocess.catalog.ids import stable_clip_id
 from cv_preprocess.catalog.models import ClipDisposition
 from cv_preprocess.catalog.aggregates import build_speaker_stats
+from cv_preprocess.catalog.reader import read_clips
 from cv_preprocess.compute.loader import resolve_compute_backend
 from cv_preprocess.catalog.linguistic_enrich import enrich_row_with_linguistic_features
 from cv_preprocess.catalog.writer import write_catalog_bundle
 from cv_preprocess.config import PipelineConfig
+from cv_preprocess.coverage.models import (
+    AnalysisBatchResult,
+    AnalyzedClip,
+    ClipError,
+    RejectedClip,
+    SkippedClip,
+)
 from cv_preprocess.io.tsv_loader import ClipRow, iter_clip_audio_paths, load_clip_rows_for_pipeline
 from cv_preprocess.pipeline.g2p_map_suggest_core import validate_clip_text_norm
 from cv_preprocess.pipeline.preprocess.helpers import (
@@ -43,6 +52,15 @@ class ClipAnalyzeOutcome:
     processed_y: np.ndarray | None = None
     processed_sr: int | None = None
     audio_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class ClipInput:
+    """Clip reference for partial analyze (coverage automation and tests)."""
+
+    row: ClipRow
+    source_row_index: int
+    clip_id: str | None = None
 
 
 def _sha256_file(path: Path) -> str:
@@ -303,15 +321,7 @@ def analyze_clip_with_gates(
     )
 
 
-def analyze_project(
-    config: PipelineConfig,
-    *,
-    progress: ProgressSink | None = None,
-    cancellation: CancellationToken | None = None,
-) -> AnalyzeResult:
-    if not config.dataset_builder.enabled:
-        raise ValueError("dataset_builder.enabled must be true to run analyze_project")
-
+def _analyze_setup_warnings(config: PipelineConfig) -> list[str]:
     warnings: list[str] = []
     if config.mfa_gate.enabled or config.nfa_gate.enabled or config.asr_gate.enabled:
         warnings.append("alignment_status=skipped (MFA/NFA/ASR gates not run in analyze v1)")
@@ -338,7 +348,193 @@ def analyze_project(
                 "audio_pipeline_enhance uses sidon_restore but torch is not installed. "
                 "Run: uv sync --extra sidon"
             ) from None
+    return warnings
 
+
+def analyze_clips(
+    clips: Sequence[ClipInput],
+    config: PipelineConfig,
+    output_dir: Path | None = None,
+    *,
+    reuse_existing: bool = True,
+    progress: ProgressSink | None = None,
+    cancellation: CancellationToken | None = None,
+    merge_into_catalog: bool = True,
+) -> AnalysisBatchResult:
+    """Analyze a subset of clips and optionally merge results into the catalog.
+
+    Existing catalog rows for the same ``clip_id`` are reused when
+    ``reuse_existing`` is true and a prior disposition is present.
+    """
+    root = config.input.corpus_root
+    pipeline_hash = pipeline_cache_key(config)
+    source_release = infer_release(root)
+    lang = config.input.locale_expected or "ja"
+    work_dir = Path(output_dir) if output_dir is not None else Path(config.dataset_builder.work_dir)
+    clips_path = work_dir / "catalog" / "clips.parquet"
+
+    existing_by_id: dict[str, dict[str, object]] = {}
+    if reuse_existing and clips_path.is_file():
+        existing_df = read_clips(clips_path)
+        for row in existing_df.iter_rows(named=True):
+            clip_id = str(row.get("clip_id") or "")
+            if clip_id:
+                existing_by_id[clip_id] = dict(row)
+
+    accepted: list[AnalyzedClip] = []
+    rejected: list[RejectedClip] = []
+    skipped: list[SkippedClip] = []
+    errors: list[ClipError] = []
+    new_rows: list[dict[str, object]] = []
+    total = len(clips)
+
+    for current, clip_input in enumerate(clips, start=1):
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+        row = clip_input.row
+        if progress is not None:
+            progress(
+                ProgressEvent(
+                    stage="analyze",
+                    message=row.path,
+                    current=current,
+                    total=total,
+                    fraction=current / total if total else 1.0,
+                )
+            )
+        try:
+            # Resolve expected clip_id when provided for reuse lookup before analyze.
+            lookup_id = clip_input.clip_id
+            if lookup_id and reuse_existing and lookup_id in existing_by_id:
+                prior = existing_by_id[lookup_id]
+                disposition = str(prior.get("disposition") or "")
+                if disposition in {
+                    ClipDisposition.ELIGIBLE.value,
+                    ClipDisposition.SELECTED.value,
+                    ClipDisposition.RESERVE.value,
+                    ClipDisposition.HARD_REJECTED.value,
+                }:
+                    skipped.append(SkippedClip(clip_id=lookup_id, reason="reuse_existing"))
+                    new_rows.append(prior)
+                    if disposition == ClipDisposition.HARD_REJECTED.value:
+                        rejected.append(
+                            RejectedClip(
+                                clip_id=lookup_id,
+                                client_id=str(prior.get("speaker_id") or row.client_id),
+                                reason=str(prior.get("reject_reason") or "hard_rejected"),
+                                duration_sec=prior.get("duration_sec"),  # type: ignore[arg-type]
+                                row=prior,
+                            )
+                        )
+                    else:
+                        accepted.append(
+                            AnalyzedClip(
+                                clip_id=lookup_id,
+                                client_id=str(prior.get("speaker_id") or row.client_id),
+                                duration_sec=prior.get("duration_sec"),  # type: ignore[arg-type]
+                                row=prior,
+                            )
+                        )
+                    continue
+
+            outcome = analyze_clip_with_gates(
+                row,
+                config=config,
+                source_row_index=clip_input.source_row_index,
+                pipeline_hash=pipeline_hash,
+                source_release=source_release,
+                root=root,
+                lang=lang,
+            )
+            catalog_row = outcome.row
+            clip_id = str(catalog_row.get("clip_id") or "")
+            new_rows.append(catalog_row)
+            if outcome.disposition == ClipDisposition.ELIGIBLE:
+                accepted.append(
+                    AnalyzedClip(
+                        clip_id=clip_id,
+                        client_id=row.client_id,
+                        duration_sec=catalog_row.get("duration_sec"),  # type: ignore[arg-type]
+                        row=catalog_row,
+                    )
+                )
+            else:
+                rejected.append(
+                    RejectedClip(
+                        clip_id=clip_id,
+                        client_id=row.client_id,
+                        reason=str(catalog_row.get("reject_reason") or "rejected"),
+                        duration_sec=catalog_row.get("duration_sec"),  # type: ignore[arg-type]
+                        row=catalog_row,
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 - batch isolation
+            clip_id = clip_input.clip_id or row.path
+            errors.append(ClipError(clip_id=clip_id, error=f"{type(exc).__name__}: {exc}"))
+
+    if merge_into_catalog and new_rows:
+        merged: dict[str, dict[str, object]] = dict(existing_by_id)
+        for row in new_rows:
+            clip_id = str(row.get("clip_id") or "")
+            if clip_id:
+                merged[clip_id] = row
+        catalog_rows = list(merged.values())
+        clips_df = pl.DataFrame(catalog_rows)
+        compute = resolve_compute_backend(config.compute.backend)
+        feature_counts_df = compute.count_features(clips_df)
+        speaker_stats_df = build_speaker_stats(clips_df)
+        duplicate_groups_df = compute.build_duplicate_groups(clips_df)
+        eligible_count = sum(
+            1
+            for row in catalog_rows
+            if row.get("disposition")
+            in {
+                ClipDisposition.ELIGIBLE.value,
+                ClipDisposition.SELECTED.value,
+                ClipDisposition.RESERVE.value,
+            }
+        )
+        hard_rejected_count = sum(
+            1 for row in catalog_rows if row.get("disposition") == ClipDisposition.HARD_REJECTED.value
+        )
+        manifest = {
+            "schema_version": config.schema_version,
+            "pipeline_hash": pipeline_hash,
+            "alignment_status": "skipped",
+            "warnings": _analyze_setup_warnings(config),
+            "eligible_count": eligible_count,
+            "hard_rejected_count": hard_rejected_count,
+            "total_clips": len(catalog_rows),
+            "linguistic_module_available": _linguistic_module_available(),
+            "partial_analyze": True,
+        }
+        write_catalog_bundle(
+            work_dir,
+            clips_df,
+            feature_counts_df=feature_counts_df,
+            speaker_stats_df=speaker_stats_df,
+            duplicate_groups_df=duplicate_groups_df,
+            manifest=manifest,
+        )
+
+    return AnalysisBatchResult(
+        accepted=accepted,
+        rejected=rejected,
+        skipped=skipped,
+        errors=errors,
+    )
+
+
+def analyze_project(
+    config: PipelineConfig,
+    *,
+    progress: ProgressSink | None = None,
+    cancellation: CancellationToken | None = None,
+) -> AnalyzeResult:
+    if not config.dataset_builder.enabled:
+        raise ValueError("dataset_builder.enabled must be true to run analyze_project")
+
+    warnings = _analyze_setup_warnings(config)
     root = config.input.corpus_root
     loaded = load_clip_rows_for_pipeline(
         config,

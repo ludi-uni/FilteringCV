@@ -72,11 +72,22 @@ Use **Switch config** in the layout to unbind and return to Setup (blocked while
 
 1. `scan` — corpus / TSV sanity check
 2. `analyze` — catalog + audio cache (heavy)
-3. `plan-split` — train/val/test plan
-4. `select` — coverage selection
+3. `plan-split` — train/val/test plan (semantics depend on protocol; see below)
+4. `select` — coverage selection (same)
 5. `materialize` — write final WAV/metadata
 6. `audit` — integrity checks
 ★ `build` — runs 1–6 with resume (default choice in the UI)
+
+### Why `plan-split` before `select`?
+
+Stage order is always `plan-split` → `select`, but **what that means depends on `dataset_builder.split.protocol`:**
+
+| Protocol | Effective flow | Why |
+|----------|----------------|-----|
+| **`unseen_speaker`** (common default) | Assign **speakers** to train/val/test first, then **select within each bucket** | Keeps the same speaker out of train and val/test. Selecting the whole pool first, then splitting speakers, often wrecks per-split coverage. |
+| **`seen_speaker` / `single_speaker`** | **Select globally**, then attach split labels to selected clips | Speaker leakage across splits is allowed (or single-speaker). Clip assignment after select matches the “select then split” intuition. |
+
+So “shouldn’t we select then split?” is right for the latter protocols; for **`unseen_speaker` the current order is intentional**. See [dataset-builder.md](dataset-builder.md).
 
 ## Security defaults
 

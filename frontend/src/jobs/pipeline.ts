@@ -35,7 +35,8 @@ export const JOB_PIPELINE: JobPipelineItem[] = [
     type: "plan-split",
     step: 3,
     label: "Plan split",
-    summary: "train / val / test の分割計画を作る（話者リーク防止プロトコルに従う）。",
+    summary:
+      "train / val / test の分割計画を作る。unseen_speaker ではここで話者をバケット割当（select より先が意図どおり）。seen_speaker / single_speaker では薄い準備で、クリップの split は select 後に付く。",
     kind: "stage",
     produces: "work/plans/split_plan.json",
   },
@@ -43,7 +44,8 @@ export const JOB_PIPELINE: JobPipelineItem[] = [
     type: "select",
     step: 4,
     label: "Select",
-    summary: "言語カバレッジを満たすようクリップを貪欲選択する（overrides 再適用もここ）。",
+    summary:
+      "言語カバレッジを満たすようクリップを貪欲選択する。unseen_speaker では split ごとのバケット内で選択。それ以外は全体選択のあとクリップに split を付与（感覚的には select→split）。overrides 再適用もここ。",
     kind: "stage",
     produces: "work/plans/selection_plan.parquet",
   },

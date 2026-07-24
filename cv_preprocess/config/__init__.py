@@ -44,6 +44,7 @@ from cv_preprocess.config.loader import CLISettings, load_config
 from cv_preprocess.config.output_split import OutputConfig, SplitConfig
 from cv_preprocess.config.pipeline import PipelineConfig
 from cv_preprocess.config.text import TextConfig
+from cv_preprocess.config.coverage import CoverageAutomationConfig
 
 __all__ = [
     "AudioPipelineConfig",
@@ -53,6 +54,7 @@ __all__ = [
     "CLISettings",
     "ClipMetadataFilters",
     "ComputeConfig",
+    "CoverageAutomationConfig",
     "DatasetBuilderConfig",
     "DatasetBuilderSplitConfig",
     "DecodeStep",

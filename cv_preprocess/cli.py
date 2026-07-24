@@ -609,6 +609,175 @@ def cmd_phonemize(
     typer.echo(g2p_phonemes(normalize_for_tts(text), kana=kana))
 
 
+@app.command("coverage-index")
+def cmd_coverage_index(
+    config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+    input_tsv: Path | None = typer.Option(None, "--input", exists=True, path_type=Path),
+    clips_dir: Path | None = typer.Option(
+        None,
+        "--clips-dir",
+        path_type=Path,
+        help="Optional override; defaults to input.corpus_root / input.audio_subdir",
+    ),
+    output: Path = typer.Option(
+        Path("output/coverage/clip-index.jsonl"),
+        "--output",
+        "-o",
+        path_type=Path,
+    ),
+    force: bool = typer.Option(False, "--force"),
+    incremental: bool = typer.Option(False, "--incremental"),
+    workers: int = typer.Option(1, "--workers"),
+    limit: int | None = typer.Option(None, "--limit"),
+) -> None:
+    """Build a lightweight clip index for coverage automation (no MFA/ASR)."""
+    from cv_preprocess.coverage.indexer import build_clip_index
+
+    cfg = load_config(config)
+    if clips_dir is not None:
+        # Keep corpus_root; audio_subdir override via temporary mutation is avoided —
+        # document that clips-dir should match corpus layout. Warn if mismatched.
+        expected = cfg.input.corpus_root / cfg.input.audio_subdir
+        if clips_dir.resolve() != expected.resolve():
+            typer.echo(
+                f"Note: --clips-dir {clips_dir} differs from config audio path {expected}; "
+                "index still resolves audio via corpus_root/audio_subdir.",
+                err=True,
+            )
+    result = build_clip_index(
+        cfg,
+        output=output,
+        input_tsv=input_tsv,
+        force=force,
+        incremental=incremental,
+        workers=workers,
+        limit=limit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "index_path": str(result.index_path),
+                "meta_path": str(result.meta_path),
+                "clip_count": result.clip_count,
+                "config_hash": result.meta.config_hash,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+@app.command("coverage-plan")
+def cmd_coverage_plan(
+    config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+    index: Path = typer.Option(..., "--index", exists=True, path_type=Path),
+    accepted_metadata: Path | None = typer.Option(None, "--accepted-metadata", path_type=Path),
+    output: Path = typer.Option(Path("output/coverage/plan.json"), "--output", "-o", path_type=Path),
+) -> None:
+    """Plan the next coverage analysis batch from deficits and the lightweight index."""
+    from cv_preprocess.coverage.counter import load_accepted_counts
+    from cv_preprocess.coverage.indexer import load_index_jsonl
+    from cv_preprocess.coverage.planner import plan_coverage
+    from cv_preprocess.reports.serializer import write_json_atomic
+
+    cfg = load_config(config)
+    if not cfg.coverage.enabled:
+        raise typer.BadParameter("coverage.enabled must be true")
+    records = load_index_jsonl(index)
+    catalog_clips = None
+    meta = accepted_metadata
+    if meta is not None and meta.suffix.lower() == ".parquet":
+        catalog_clips = meta
+        meta = None
+    accepted = load_accepted_counts(accepted_metadata=meta, catalog_clips=catalog_clips)
+    plan = plan_coverage(config=cfg.coverage, index_records=records, accepted_counts=accepted)
+    write_json_atomic(output, plan.to_dict())
+    typer.echo(json.dumps({"output": str(output), "batch_size": plan.batch_size}, ensure_ascii=False, indent=2))
+
+
+@app.command("coverage-run")
+def cmd_coverage_run(
+    config: Path | None = typer.Option(None, "--config", "-c", path_type=Path),
+    index: Path | None = typer.Option(None, "--index", path_type=Path),
+    accepted_metadata: Path | None = typer.Option(None, "--accepted-metadata", path_type=Path),
+    output: Path | None = typer.Option(None, "--output", "-o", path_type=Path),
+    resume: Path | None = typer.Option(None, "--resume", path_type=Path),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    max_iterations: int | None = typer.Option(None, "--max-iterations"),
+    max_clips: int | None = typer.Option(None, "--max-clips"),
+    batch_size: int | None = typer.Option(None, "--batch-size"),
+) -> None:
+    """Iteratively plan and analyze clips until coverage targets are met (or stop)."""
+    from cv_preprocess.coverage.runner import run_coverage
+    from cv_preprocess.coverage.state import load_run_state
+
+    if resume is not None:
+        run_dir = resume
+        state_preview = load_run_state(run_dir)
+        if config is None:
+            raise typer.BadParameter("--config is required with --resume")
+        if index is None:
+            raise typer.BadParameter("--index is required with --resume")
+        cfg = load_config(config)
+        state = run_coverage(
+            cfg,
+            index_path=index,
+            output_dir=run_dir,
+            accepted_metadata=accepted_metadata,
+            resume=True,
+            dry_run=dry_run,
+            max_iterations=max_iterations,
+            max_clips=max_clips,
+            batch_size=batch_size,
+        )
+        _ = state_preview
+    else:
+        if config is None or index is None or output is None:
+            raise typer.BadParameter("--config, --index, and --output are required (or use --resume)")
+        cfg = load_config(config)
+        state = run_coverage(
+            cfg,
+            index_path=index,
+            output_dir=output,
+            accepted_metadata=accepted_metadata,
+            resume=False,
+            dry_run=dry_run,
+            max_iterations=max_iterations,
+            max_clips=max_clips,
+            batch_size=batch_size,
+        )
+    typer.echo(
+        json.dumps(
+            {
+                "run_id": state.run_id,
+                "status": state.status.value,
+                "iteration": state.iteration,
+                "analyzed": len(state.analyzed_clip_ids),
+                "accepted": len(state.accepted_clip_ids),
+                "rejected": len(state.rejected_clip_ids),
+                "remaining_deficits": state.remaining_deficits,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
+@app.command("coverage-report")
+def cmd_coverage_report(
+    run_dir: Path = typer.Option(..., "--run-dir", exists=True, path_type=Path),
+    config: Path | None = typer.Option(None, "--config", "-c", path_type=Path),
+) -> None:
+    """Regenerate coverage reports from an existing run directory."""
+    from cv_preprocess.coverage.report import generate_report_from_run_dir
+
+    coverage_cfg = None
+    if config is not None:
+        coverage_cfg = load_config(config).coverage
+    paths = generate_report_from_run_dir(run_dir, coverage_cfg)
+    typer.echo(json.dumps({k: str(v) for k, v in paths.items()}, ensure_ascii=False, indent=2))
+
+
 def _default_gui_project_root(config: Path | None) -> Path:
     cwd = Path.cwd().resolve()
     if (cwd / "frontend").is_dir() or (cwd / "pyproject.toml").is_file():

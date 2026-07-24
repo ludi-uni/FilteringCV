@@ -9,6 +9,8 @@ Dataset builder selection chooses clips to maximize linguistic coverage under ha
 3. **Reserve pool** — top `reserve_ratio` of remaining clips by score; tail shuffled by seed
 4. **Local search** (optional) — swap selected ↔ reserve (`1v1`, `1v2`, `2v1`) until no improvement
 
+For **`unseen_speaker`**, step 2 runs **once per split bucket** after speakers are assigned in `plan-split` (each split has its own duration share). For **`seen_speaker` / `single_speaker`**, selection is over the full pool and clip splits are finalized afterward. See [dataset-builder.md](dataset-builder.md#plan-split-vs-select-protocol-matters).
+
 ## Target distribution
 
 For feature family `k` with temperature `α_k`:

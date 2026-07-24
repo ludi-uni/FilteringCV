@@ -34,6 +34,23 @@ cv-preprocess build -c config/default.yaml
 | Audit | `audit` | Integrity checks |
 | Full pipeline | `build` | All of the above + `run_manifest.json` |
 
+## Plan-split vs select (protocol matters)
+
+The **job order** is always `plan-split` → `select`. The **logical** order of “partition then pick” vs “pick then partition” depends on `dataset_builder.split.protocol`:
+
+| Protocol | Effective flow | Rationale |
+|----------|----------------|-----------|
+| **`unseen_speaker`** | Speaker → train/val/test **first**, then **select inside each bucket** toward that split’s share of `target_duration_hours` | Prevents the same speaker appearing in train and val/test. Global select-then-speaker-split often starves one split of coverage. |
+| **`seen_speaker`** | Select over the full eligible pool, then assign **clip** splits (leakage-aware) | Speakers may appear in more than one split; clip labeling after select is fine. |
+| **`single_speaker`** | Same pattern as seen-speaker-style finalize after select | Single-speaker corpus; clip splits after selection. |
+
+Implementation sketch:
+
+- `unseen_speaker`: `plan_dataset_split` fills `speaker_assignments`; `select_dataset` runs greedy selection **per split**; clip labels are derived from the speaker map.
+- `seen_speaker` / `single_speaker`: selection runs on the full candidate set; `finalize_clip_splits` assigns clip splits **after** selection.
+
+If you expected “select then split,” check `split.protocol` — that intuition matches `seen_speaker` / `single_speaker`, not the usual `unseen_speaker` path.
+
 ## Key config blocks
 
 ```yaml
