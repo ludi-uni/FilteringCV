@@ -34,3 +34,6 @@ credentials.json
 # Frontend
 frontend/node_modules/
 frontend/dist/
+
+# GUI last-config cache
+.filteringcv/
