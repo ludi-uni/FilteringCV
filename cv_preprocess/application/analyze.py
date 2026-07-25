@@ -530,12 +530,14 @@ def analyze_project(
     *,
     progress: ProgressSink | None = None,
     cancellation: CancellationToken | None = None,
+    reuse_existing: bool = True,
 ) -> AnalyzeResult:
     if not config.dataset_builder.enabled:
         raise ValueError("dataset_builder.enabled must be true to run analyze_project")
 
     warnings = _analyze_setup_warnings(config)
     root = config.input.corpus_root
+    work_dir = Path(config.dataset_builder.work_dir)
     loaded = load_clip_rows_for_pipeline(
         config,
         apply_input_max_clips=False,
@@ -547,6 +549,21 @@ def analyze_project(
     pipeline_hash = pipeline_cache_key(config)
     source_release = infer_release(root)
     lang = config.input.locale_expected or "ja"
+
+    existing_by_key: dict[tuple[str, int], dict[str, object]] = {}
+    reused = 0
+    if reuse_existing:
+        clips_path = work_dir / "catalog" / "clips.parquet"
+        if clips_path.is_file():
+            existing_df = read_clips(clips_path)
+            for prior in existing_df.iter_rows(named=True):
+                path_key = str(prior.get("normalized_relative_source_path") or "")
+                try:
+                    row_index = int(prior.get("source_row_index"))  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    continue
+                if path_key:
+                    existing_by_key[(path_key, row_index)] = dict(prior)
 
     catalog_rows: list[dict[str, object]] = []
     eligible_count = 0
@@ -563,8 +580,32 @@ def analyze_project(
                     current=current,
                     total=total,
                     fraction=current / total if total else 1.0,
+                    metadata={"reused": reused},
                 )
             )
+        path_key = _normalize_relative_path(row.path)
+        prior = existing_by_key.get((path_key, source_row_index))
+        if (
+            reuse_existing
+            and prior is not None
+            and str(prior.get("pipeline_hash") or "") == pipeline_hash
+            and str(prior.get("text_raw") or "") == row.sentence
+            and str(prior.get("disposition") or "")
+            in {
+                ClipDisposition.ELIGIBLE.value,
+                ClipDisposition.SELECTED.value,
+                ClipDisposition.RESERVE.value,
+                ClipDisposition.HARD_REJECTED.value,
+            }
+        ):
+            catalog_rows.append(prior)
+            reused += 1
+            if str(prior.get("disposition")) == ClipDisposition.HARD_REJECTED.value:
+                hard_rejected_count += 1
+            else:
+                eligible_count += 1
+            continue
+
         outcome = analyze_clip_with_gates(
             row,
             config=config,
@@ -580,6 +621,9 @@ def analyze_project(
         else:
             hard_rejected_count += 1
 
+    if reused:
+        warnings.append(f"reused_existing_catalog_rows={reused}")
+
     manifest = {
         "schema_version": config.schema_version,
         "pipeline_hash": pipeline_hash,
@@ -588,7 +632,9 @@ def analyze_project(
         "eligible_count": eligible_count,
         "hard_rejected_count": hard_rejected_count,
         "total_clips": total,
+        "reused_existing_rows": reused,
         "linguistic_module_available": _linguistic_module_available(),
+        "partial_analyze": False,
     }
     clips_df = pl.DataFrame(catalog_rows)
     compute = resolve_compute_backend(config.compute.backend)
@@ -596,7 +642,7 @@ def analyze_project(
     speaker_stats_df = build_speaker_stats(clips_df)
     duplicate_groups_df = compute.build_duplicate_groups(clips_df)
     catalog = write_catalog_bundle(
-        config.dataset_builder.work_dir,
+        work_dir,
         clips_df,
         feature_counts_df=feature_counts_df,
         speaker_stats_df=speaker_stats_df,

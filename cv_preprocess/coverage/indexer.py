@@ -13,8 +13,8 @@ from typing import Any
 
 import numpy as np
 
+from cv_preprocess.application.common import CancellationToken, ProgressEvent, ProgressSink
 from cv_preprocess.catalog.ids import stable_clip_id
-from cv_preprocess.config.coverage import CoverageAutomationConfig
 from cv_preprocess.config.pipeline import PipelineConfig
 from cv_preprocess.coverage.feature_extractor import extract_coverage_features
 from cv_preprocess.coverage.models import CheapQuality, ClipIndexMeta, ClipIndexRecord
@@ -220,6 +220,61 @@ class IndexBuildResult:
     meta: ClipIndexMeta
 
 
+def _reuse_existing_record(
+    row: ClipRow,
+    *,
+    source_row_index: int,
+    root: Path,
+    audio_subdir: str,
+    existing_by_row: dict[tuple[str, int], ClipIndexRecord],
+) -> ClipIndexRecord | None:
+    """Reuse a prior index row when text + audio hash are unchanged (skip G2P/decode)."""
+    key = (_normalize_relative_path(row.path), source_row_index)
+    old = existing_by_row.get(key)
+    if old is None or old.sentence != row.sentence:
+        return None
+    clip_path = iter_clip_audio_paths(root, audio_subdir, row)
+    if not clip_path.is_file():
+        if not old.audio_sha256:
+            return old
+        return None
+    try:
+        audio_sha256 = _sha256_file(clip_path)
+    except OSError:
+        return None
+    if audio_sha256 != old.audio_sha256:
+        return None
+    return old
+
+
+def _emit_index_progress(
+    progress: ProgressSink | None,
+    *,
+    current: int,
+    total: int,
+    message: str,
+    reused: int = 0,
+    built_new: int = 0,
+) -> None:
+    if progress is None:
+        return
+    fraction = (current / total) if total else 1.0
+    progress(
+        ProgressEvent(
+            stage="coverage-index",
+            message=message,
+            current=current,
+            total=total,
+            fraction=fraction,
+            metadata={
+                "phase": "index",
+                "reused": reused,
+                "built_new": built_new,
+            },
+        )
+    )
+
+
 def build_clip_index(
     config: PipelineConfig,
     *,
@@ -230,23 +285,32 @@ def build_clip_index(
     workers: int = 1,
     limit: int | None = None,
     decode_audio: bool = True,
+    progress: ProgressSink | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> IndexBuildResult:
     root = config.input.corpus_root
+    audio_subdir = config.input.audio_subdir
     tsv_path = input_tsv or (root / config.input.clip_tsv)
     fingerprint = source_fingerprint(tsv_path, config)
     cfg_hash = config_hash_for_coverage(config)
     meta_out = meta_path_for_index(output)
 
-    existing: dict[str, ClipIndexRecord] = {}
+    existing_by_row: dict[tuple[str, int], ClipIndexRecord] = {}
     if incremental and output.is_file() and not force:
         for record in load_index_jsonl(output):
-            existing[record.clip_id] = record
+            existing_by_row[(_normalize_relative_path(record.source_path), record.source_row_index)] = (
+                record
+            )
         if meta_out.is_file():
             old_meta = ClipIndexMeta.model_validate_json(meta_out.read_text(encoding="utf-8"))
             if old_meta.source_fingerprint != fingerprint:
                 logger.warning(
                     "coverage index fingerprint changed; incremental rebuild will refresh changed clips"
                 )
+
+    _emit_index_progress(progress, current=0, total=1, message="loading clip rows")
+    if cancellation is not None:
+        cancellation.raise_if_cancelled()
 
     loaded = load_clip_rows_for_pipeline(
         config,
@@ -260,13 +324,25 @@ def build_clip_index(
         indexed = indexed[: max(0, limit)]
 
     source_release = infer_release(root)
-    current_ids: set[str] = set()
     built: list[ClipIndexRecord] = []
+    reused = 0
+    built_new = 0
+    total = len(indexed)
+    can_reuse = bool(incremental and not force and existing_by_row)
 
-    def _process(item: tuple[int, ClipRow]) -> ClipIndexRecord | None:
+    def _process(item: tuple[int, ClipRow]) -> tuple[ClipIndexRecord | None, bool]:
         source_row_index, row = item
-        # provisional id inputs for reuse check need audio hash; always rebuild cheaply when forced
-        return build_index_record(
+        if can_reuse:
+            reused_record = _reuse_existing_record(
+                row,
+                source_row_index=source_row_index,
+                root=root,
+                audio_subdir=audio_subdir,
+                existing_by_row=existing_by_row,
+            )
+            if reused_record is not None:
+                return reused_record, True
+        record = build_index_record(
             row,
             config=config,
             source_row_index=source_row_index,
@@ -274,47 +350,91 @@ def build_clip_index(
             source_release=source_release,
             decode_audio=decode_audio,
         )
+        return record, False
+
+    _emit_index_progress(
+        progress,
+        current=0,
+        total=max(total, 1),
+        message="indexing clips",
+    )
 
     workers = max(1, int(workers))
     if workers == 1:
-        for item in indexed:
-            record = _process(item)
+        for i, item in enumerate(indexed, start=1):
+            if cancellation is not None:
+                cancellation.raise_if_cancelled()
+            record, was_reused = _process(item)
             if record is None:
+                if i == 1 or i == total or i % 25 == 0:
+                    _emit_index_progress(
+                        progress,
+                        current=i,
+                        total=total,
+                        message="indexing clips",
+                        reused=reused,
+                        built_new=built_new,
+                    )
                 continue
-            current_ids.add(record.clip_id)
-            if incremental and not force and record.clip_id in existing:
-                old = existing[record.clip_id]
-                if (
-                    old.sentence == record.sentence
-                    and old.normalized_text == record.normalized_text
-                    and old.audio_sha256 == record.audio_sha256
-                    and old.source_path == record.source_path
-                ):
-                    built.append(old)
-                    continue
+            if was_reused:
+                reused += 1
+            else:
+                built_new += 1
             built.append(record)
+            if i == 1 or i == total or i % 25 == 0:
+                _emit_index_progress(
+                    progress,
+                    current=i,
+                    total=total,
+                    message="indexing clips",
+                    reused=reused,
+                    built_new=built_new,
+                )
     else:
+        completed = 0
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {pool.submit(_process, item): item for item in indexed}
             for future in as_completed(futures):
-                record = future.result()
+                if cancellation is not None:
+                    cancellation.raise_if_cancelled()
+                record, was_reused = future.result()
+                completed += 1
                 if record is None:
+                    if completed == 1 or completed == total or completed % 25 == 0:
+                        _emit_index_progress(
+                            progress,
+                            current=completed,
+                            total=total,
+                            message="indexing clips",
+                            reused=reused,
+                            built_new=built_new,
+                        )
                     continue
-                current_ids.add(record.clip_id)
-                if incremental and not force and record.clip_id in existing:
-                    old = existing[record.clip_id]
-                    if (
-                        old.sentence == record.sentence
-                        and old.normalized_text == record.normalized_text
-                        and old.audio_sha256 == record.audio_sha256
-                        and old.source_path == record.source_path
-                    ):
-                        built.append(old)
-                        continue
+                if was_reused:
+                    reused += 1
+                else:
+                    built_new += 1
                 built.append(record)
+                if completed == 1 or completed == total or completed % 25 == 0:
+                    _emit_index_progress(
+                        progress,
+                        current=completed,
+                        total=total,
+                        message="indexing clips",
+                        reused=reused,
+                        built_new=built_new,
+                    )
 
     # Preserve stable order by source_row_index
     built.sort(key=lambda r: (r.source_row_index, r.clip_id))
+    _emit_index_progress(
+        progress,
+        current=total,
+        total=max(total, 1),
+        message="writing index",
+        reused=reused,
+        built_new=built_new,
+    )
     write_index_jsonl(output, built)
     meta = ClipIndexMeta(
         schema_version=1,
@@ -327,4 +447,12 @@ def build_clip_index(
         incremental=bool(incremental and not force),
     )
     write_json_atomic(meta_out, meta)
+    _emit_index_progress(
+        progress,
+        current=total,
+        total=max(total, 1),
+        message="index complete",
+        reused=reused,
+        built_new=built_new,
+    )
     return IndexBuildResult(index_path=output, meta_path=meta_out, clip_count=len(built), meta=meta)

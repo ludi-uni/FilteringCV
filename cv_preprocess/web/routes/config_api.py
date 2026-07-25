@@ -20,6 +20,7 @@ CONFIG_SECTIONS: list[dict[str, str]] = [
     {"id": "output", "label": "Output", "group": "corpus"},
     {"id": "dataset_builder", "label": "Dataset builder", "group": "builder"},
     {"id": "compute", "label": "Compute", "group": "builder"},
+    {"id": "coverage", "label": "Coverage automation", "group": "builder"},
     {"id": "quality_gate", "label": "Quality gate", "group": "audio"},
     {"id": "early_audio_gate", "label": "Early audio gate", "group": "audio"},
     {"id": "audio_pipeline", "label": "Audio pipeline", "group": "audio"},

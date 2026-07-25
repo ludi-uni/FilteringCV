@@ -26,6 +26,10 @@ from cv_preprocess.application.split import load_split_plan, plan_dataset_split
 from cv_preprocess.catalog.reader import load_catalog
 from cv_preprocess.config import PipelineConfig
 from cv_preprocess.compute.profiling import resource_snapshot
+from cv_preprocess.coverage.indexer import build_clip_index
+from cv_preprocess.coverage.paths import accepted_catalog_path, resolve_coverage_paths
+from cv_preprocess.coverage.report import generate_report_from_run_dir
+from cv_preprocess.coverage.runner import run_coverage
 from cv_preprocess.reports.serializer import write_json_atomic
 
 
@@ -47,6 +51,105 @@ def _stage_paths(work_dir: Path) -> dict[str, Path]:
     }
 
 
+def _catalog_manifest(work_dir: Path) -> dict[str, Any]:
+    path = work_dir / "catalog" / "manifest.json"
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _should_skip_full_analyze(
+    *,
+    force: bool,
+    catalog_exists: bool,
+    coverage_prepass: bool,
+    work_dir: Path,
+) -> bool:
+    """Skip analyze only when a complete catalog already exists and coverage did not just pre-fill."""
+    if force or not catalog_exists:
+        return False
+    if coverage_prepass:
+        # Coverage may have written a partial catalog; always finish with reuse-aware analyze.
+        return False
+    manifest = _catalog_manifest(work_dir)
+    if manifest.get("partial_analyze"):
+        return False
+    return True
+
+
+def _run_coverage_prepass(
+    config: PipelineConfig,
+    *,
+    force: bool,
+    progress: ProgressSink | None,
+    cancellation: CancellationToken | None,
+) -> dict[str, Any]:
+    """Lightweight index + selective analyze before full corpus analyze."""
+    if cancellation is not None:
+        cancellation.raise_if_cancelled()
+    paths = resolve_coverage_paths(config)
+    if progress is not None:
+        progress(
+            ProgressEvent(
+                stage="build",
+                message="coverage-index",
+                metadata={"phase": "coverage", "output": str(paths.index_path)},
+            )
+        )
+    index_result = build_clip_index(
+        config,
+        output=paths.index_path,
+        force=force,
+        incremental=not force,
+        progress=progress,
+        cancellation=cancellation,
+    )
+    if cancellation is not None:
+        cancellation.raise_if_cancelled()
+    catalog = accepted_catalog_path(config)
+    resume = (
+        paths.run_dir.is_dir()
+        and (paths.run_dir / "run-state.json").is_file()
+        and not force
+    )
+    if force and (paths.run_dir / "run-state.json").is_file():
+        (paths.run_dir / "run-state.json").unlink()
+    if progress is not None:
+        progress(
+            ProgressEvent(
+                stage="build",
+                message="coverage-run",
+                metadata={"phase": "coverage", "resume": resume},
+            )
+        )
+    state = run_coverage(
+        config,
+        index_path=paths.index_path,
+        output_dir=paths.run_dir,
+        accepted_metadata=catalog if catalog.is_file() else None,
+        resume=resume,
+        dry_run=False,
+        progress=progress,
+        cancellation=cancellation,
+    )
+    if cancellation is not None:
+        cancellation.raise_if_cancelled()
+    report_paths = generate_report_from_run_dir(paths.run_dir, config.coverage)
+    return {
+        "index_path": str(index_result.index_path),
+        "clip_count": index_result.clip_count,
+        "run_dir": str(paths.run_dir),
+        "status": state.status.value,
+        "analyzed": len(state.analyzed_clip_ids),
+        "accepted": len(state.accepted_clip_ids),
+        "report_files": {k: str(v) for k, v in report_paths.items()},
+    }
+
+
 def build_dataset(
     config: PipelineConfig,
     *,
@@ -62,6 +165,7 @@ def build_dataset(
     stage_timings: dict[str, float] = {}
     stage_skipped: dict[str, bool] = {}
     counts: dict[str, Any] = {}
+    coverage_summary: dict[str, Any] | None = None
 
     def _emit(stage: str, message: str, **metadata: Any) -> None:
         if progress is not None:
@@ -79,9 +183,38 @@ def build_dataset(
     stage_timings["scan"] = time.perf_counter() - scan_started
     stage_skipped["scan"] = False
 
+    coverage_prepass = bool(config.coverage.enabled and config.coverage.insert_before_analyze)
+    if coverage_prepass:
+        _check_cancel()
+        _emit("build", "coverage-prepass (before analyze)")
+        coverage_started = time.perf_counter()
+        coverage_summary = _run_coverage_prepass(
+            config,
+            force=force,
+            progress=progress,
+            cancellation=cancellation,
+        )
+        stage_timings["coverage"] = time.perf_counter() - coverage_started
+        stage_skipped["coverage"] = False
+        counts["coverage"] = {
+            "status": coverage_summary.get("status"),
+            "analyzed": coverage_summary.get("analyzed"),
+            "accepted": coverage_summary.get("accepted"),
+            "index_clips": coverage_summary.get("clip_count"),
+        }
+    else:
+        stage_timings["coverage"] = 0.0
+        stage_skipped["coverage"] = True
+
     _check_cancel()
     catalog = load_catalog(work_dir)
-    if not force and paths["catalog"].is_file():
+    catalog_exists = paths["catalog"].is_file()
+    if _should_skip_full_analyze(
+        force=force,
+        catalog_exists=catalog_exists,
+        coverage_prepass=coverage_prepass,
+        work_dir=work_dir,
+    ):
         _emit("build", "analyze skipped (catalog present)")
         analyze_result = AnalyzeResult(
             catalog=catalog,
@@ -92,9 +225,18 @@ def build_dataset(
         stage_timings["analyze"] = 0.0
         stage_skipped["analyze"] = True
     else:
-        _emit("build", "analyze")
+        _emit(
+            "build",
+            "analyze"
+            + (" (reuse coverage results)" if coverage_prepass else ""),
+        )
         analyze_started = time.perf_counter()
-        analyze_result = analyze_project(config, progress=progress, cancellation=cancellation)
+        analyze_result = analyze_project(
+            config,
+            progress=progress,
+            cancellation=cancellation,
+            reuse_existing=not force,
+        )
         stage_timings["analyze"] = time.perf_counter() - analyze_started
         stage_skipped["analyze"] = False
         catalog = analyze_result.catalog
@@ -166,6 +308,7 @@ def build_dataset(
         },
         "materialize_output_root": materialize_result.output_root,
         "audit_passed": audit_report.passed,
+        "coverage_prepass": coverage_summary,
     }
     manifest_path = work_dir / "run_manifest.json"
     write_json_atomic(manifest_path, manifest)

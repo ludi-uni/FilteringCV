@@ -146,8 +146,12 @@ compute:
   backend: auto
 
 # 希少音素カバレッジ自動化（任意）: docs/coverage-automation.md
+# GUI: Config で enabled を true にしたあと Build を実行（analyze の前に自動差し込み）
 # coverage:
 #   enabled: false
+#   insert_before_analyze: true
+#   output_dir: output/coverage
+#   active_run_dirname: active-run
 
 # 二次パイプライン（任意）: cv-preprocess secondary
 # docs/追加仕様.md §11–§12、BandwidthExtensionStep（uv sync --extra hifigan）

@@ -8,6 +8,7 @@ import polars as pl
 from fastapi import APIRouter, HTTPException, Request
 
 from cv_preprocess.catalog.reader import read_clips
+from cv_preprocess.coverage.paths import resolve_coverage_paths
 from cv_preprocess.reports.coverage import compute_coverage_summary
 from cv_preprocess.reports.rejection import compute_rejection_summary
 from cv_preprocess.web.dependencies import get_app_state
@@ -37,6 +38,31 @@ def coverage_report(request: Request) -> dict[str, Any]:
     )
     report = compute_coverage_summary(clips, feature_counts)
     return report.model_dump(mode="json")
+
+
+@router.get("/coverage-automation")
+def coverage_automation_report(request: Request) -> dict[str, Any]:
+    """Summarize the GUI active coverage-automation run (if any)."""
+    state = get_app_state(request)
+    paths = resolve_coverage_paths(state.config, base_dir=state.project_root)
+    summary = _read_json(paths.run_dir / "coverage-summary.json")
+    index_ready = paths.index_path.is_file()
+    run_ready = (paths.run_dir / "run-state.json").is_file()
+    message = None
+    if not state.config.coverage.enabled:
+        message = "coverage.enabled is false"
+    elif not run_ready:
+        message = "No active coverage run yet — start coverage-build from Jobs"
+    return {
+        "available": True,
+        "enabled": bool(state.config.coverage.enabled),
+        "output_dir": str(paths.output_dir),
+        "run_dir": str(paths.run_dir),
+        "index_ready": index_ready,
+        "run_ready": run_ready,
+        "summary": summary,
+        "message": message,
+    }
 
 
 @router.get("/rejection")

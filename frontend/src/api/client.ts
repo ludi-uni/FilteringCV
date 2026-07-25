@@ -6,6 +6,7 @@ import type {
   ConfigResponse,
   ConfigSaveResponse,
   ConfigValidateResponse,
+  CoverageAutomationReport,
   CoverageReport,
   CreateJobRequest,
   DashboardSummary,
@@ -99,6 +100,9 @@ export const api = {
   },
 
   coverageReport: () => request<CoverageReport>("/api/reports/coverage"),
+
+  coverageAutomationReport: () =>
+    request<CoverageAutomationReport>("/api/reports/coverage-automation"),
 
   listOverrides: () => request<OverrideListResponse>("/api/overrides"),
 

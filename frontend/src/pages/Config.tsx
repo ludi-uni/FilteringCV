@@ -7,7 +7,7 @@ type FilterChip = "all" | "filters" | "builder" | "audio" | "gates" | "changed";
 
 const FILTER_GROUPS: Record<Exclude<FilterChip, "all" | "changed">, string[]> = {
   filters: ["speakers", "input"],
-  builder: ["dataset_builder", "compute"],
+  builder: ["dataset_builder", "compute", "coverage"],
   audio: [
     "quality_gate",
     "early_audio_gate",

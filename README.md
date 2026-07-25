@@ -50,7 +50,9 @@ YAML で `dataset_builder.enabled: true` のとき、Jobs では次の順で進�
 | 4 | `select` | カバレッジに沿ったクリップ選択（同上） | `work/plans/selection_plan.parquet` |
 | 5 | `materialize` | WAV・メタデータ等を出力ディレクトリへ書き出し | 最終コーパス一式 |
 | 6 | `audit` | 選択・分割・出力の整合性チェック | 監査結果 |
-| ★ | **`build`（推奨）** | **1〜6 を順に実行**（途中成果物があれば再開） | 上記すべて + `run_manifest.json` |
+| ★ | **`build`（推奨）** | **scan→（coverage）→analyze→…→audit**（途中成果物があれば再開） | 上記すべて + `run_manifest.json` |
+
+`coverage.enabled: true` のとき、Build は **analyze の前**に希少音素カバレッジ（軽量 index + 有望候補のみ品質解析）を差し込みます。詳細は [docs/coverage-automation.md](docs/coverage-automation.md)。
 
 個別ステージは「analyze だけやり直す」「select だけ再実行」など向けです。`Force` は既存成果物があっても再実行します。
 

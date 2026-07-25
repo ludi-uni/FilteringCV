@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from cv_preprocess.application.analyze import ClipInput, analyze_clips
+from cv_preprocess.application.common import CancellationToken, ProgressEvent, ProgressSink
 from cv_preprocess.config.coverage import CoverageAutomationConfig
 from cv_preprocess.config.pipeline import PipelineConfig
 from cv_preprocess.coverage.counter import load_accepted_counts
@@ -187,13 +188,39 @@ def run_coverage(
     max_clips: int | None = None,
     batch_size: int | None = None,
     analyze_fn: AnalyzeFn | None = None,
+    progress: ProgressSink | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> CoverageRunState:
     coverage = config.coverage
     if not coverage.enabled:
         raise ValueError("coverage.enabled must be true to run coverage automation")
 
+    def _emit(
+        message: str,
+        *,
+        current: int | None = None,
+        total: int | None = None,
+        fraction: float | None = None,
+        **metadata: Any,
+    ) -> None:
+        if progress is None:
+            return
+        progress(
+            ProgressEvent(
+                stage="coverage-run",
+                message=message,
+                current=current,
+                total=total,
+                fraction=fraction,
+                metadata={"phase": "run", **metadata},
+            )
+        )
+
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if cancellation is not None:
+        cancellation.raise_if_cancelled()
+    _emit("loading index", metadata={"index_path": str(index_path)})
     index_records = load_index_jsonl(index_path)
     records_by_id = {record.clip_id: record for record in index_records}
     index_meta = _load_index_meta(index_path)
@@ -236,7 +263,10 @@ def run_coverage(
     analyze = analyze_fn or analyze_clips
     prefer_corpus_rows = analyze_fn is None
 
+    max_iters = int(coverage.limits.max_iterations)
     while True:
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
         accepted_counts = _accepted_counts_for_state(
             accepted_metadata=accepted_metadata,
             catalog_clips=catalog_clips if catalog_clips.is_file() else None,
@@ -248,6 +278,18 @@ def run_coverage(
         required = remaining_required_deficits(coverage, deficits)
         state.current_coverage = dict(accepted_counts)
         state.remaining_deficits = dict(required)
+
+        iter_num = state.iteration + 1
+        _emit(
+            f"planning iteration {iter_num}",
+            current=state.iteration,
+            total=max_iters,
+            fraction=min(1.0, state.iteration / max(max_iters, 1)),
+            iteration=iter_num,
+            remaining_deficit_total=total_deficit(required),
+            analyzed=len(state.analyzed_clip_ids),
+            accepted=len(state.accepted_clip_ids),
+        )
 
         plan = plan_coverage(
             config=coverage,
@@ -329,12 +371,24 @@ def run_coverage(
         before_satisfied = {
             feature for feature, target in targets.items() if accepted_counts.get(feature, 0) >= target
         }
+        _emit(
+            f"analyzing batch iteration {state.iteration}",
+            current=state.iteration,
+            total=max_iters,
+            fraction=min(1.0, state.iteration / max(max_iters, 1)),
+            iteration=state.iteration,
+            batch_size=len(clip_inputs),
+            candidate_pool=plan.candidate_pool_size,
+            remaining_deficit_total=total_deficit(required),
+        )
         batch_result = analyze(
             clip_inputs,
             config,
             config.dataset_builder.work_dir,
             reuse_existing=True,
             merge_into_catalog=True,
+            progress=progress,
+            cancellation=cancellation,
         )
 
         newly_accepted = [item for item in batch_result.accepted if item.clip_id not in state.accepted_clip_ids]

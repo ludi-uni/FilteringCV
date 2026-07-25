@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -164,6 +165,13 @@ class CoverageAutomationConfig(BaseModel):
     """Rare-feature coverage automation. Disabled by default (no effect on existing runs)."""
 
     enabled: bool = False
+    #: When true (default), ``build`` / recommended GUI flow runs coverage **before** full analyze
+    #: so only high-utility clips are quality-analyzed first; remaining clips reuse those results.
+    insert_before_analyze: bool = True
+    #: Directory for index / plan / active run (relative paths resolve from process cwd / project root).
+    output_dir: Path = Path("output/coverage")
+    #: Fixed run directory name used by GUI jobs (resume-friendly).
+    active_run_dirname: str = "active-run"
     counting_mode: CountingMode = "per_clip"
     features: dict[str, FeatureFamilyTargetConfig] = Field(default_factory=dict)
     required_features: list[str] = Field(default_factory=list)

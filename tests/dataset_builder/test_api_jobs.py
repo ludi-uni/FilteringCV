@@ -60,12 +60,20 @@ def test_job_not_found(api_client: TestClient) -> None:
     assert resp.status_code == 404
 
 
-def test_create_build_job(api_client: TestClient) -> None:
+def test_create_coverage_build_job(api_client: TestClient) -> None:
     with patch("cv_preprocess.jobs.runner.JobRunner.start_job"):
         resp = api_client.post(
             "/api/jobs",
-            json={"job_type": JobType.BUILD.value, "force": True},
+            json={"job_type": JobType.COVERAGE_BUILD.value, "force": False},
         )
     assert resp.status_code == 200
-    assert resp.json()["job_type"] == JobType.BUILD.value
-    assert resp.json()["force"] is True
+    assert resp.json()["job_type"] == JobType.COVERAGE_BUILD.value
+
+
+def test_coverage_automation_report_endpoint(api_client: TestClient) -> None:
+    resp = api_client.get("/api/reports/coverage-automation")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["available"] is True
+    assert payload["enabled"] is False
+    assert "run_dir" in payload

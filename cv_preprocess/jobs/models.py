@@ -25,6 +25,22 @@ class JobType(str, Enum):
     MATERIALIZE = "materialize"
     AUDIT = "audit"
     BUILD = "build"
+    COVERAGE_INDEX = "coverage-index"
+    COVERAGE_PLAN = "coverage-plan"
+    COVERAGE_RUN = "coverage-run"
+    COVERAGE_REPORT = "coverage-report"
+    COVERAGE_BUILD = "coverage-build"
+
+
+COVERAGE_JOB_TYPES = frozenset(
+    {
+        JobType.COVERAGE_INDEX,
+        JobType.COVERAGE_PLAN,
+        JobType.COVERAGE_RUN,
+        JobType.COVERAGE_REPORT,
+        JobType.COVERAGE_BUILD,
+    }
+)
 
 
 TERMINAL_JOB_STATUSES = frozenset(

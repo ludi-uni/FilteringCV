@@ -14,7 +14,12 @@ export type JobType =
   | "select"
   | "materialize"
   | "audit"
-  | "build";
+  | "build"
+  | "coverage-index"
+  | "coverage-plan"
+  | "coverage-run"
+  | "coverage-report"
+  | "coverage-build";
 
 export interface JobSummary {
   id: string;
@@ -102,6 +107,45 @@ export interface CoverageReport {
   unique_features: number;
   entries: FeatureCoverageEntry[];
   js_distance_to_uniform: Record<string, number>;
+}
+
+export interface CoverageAutomationFeatureRow {
+  feature: string;
+  target: number;
+  accepted_before?: number;
+  accepted_after?: number;
+  deficit?: number;
+  candidate_total?: number;
+  candidate_remaining?: number;
+  estimated_pass_rate?: number;
+  expected_final_count?: number;
+  status?: string;
+  required?: boolean;
+}
+
+export interface CoverageAutomationReport {
+  available: boolean;
+  enabled: boolean;
+  output_dir: string;
+  run_dir: string;
+  index_ready: boolean;
+  run_ready: boolean;
+  summary: {
+    run_id?: string;
+    status?: string;
+    started_at?: string;
+    updated_at?: string;
+    iteration?: number;
+    analyzed_clips?: number;
+    accepted_clips?: number;
+    rejected_clips?: number;
+    overall_pass_rate?: number;
+    analyzed_audio_hours?: number;
+    remaining_deficit_total?: number;
+    features?: CoverageAutomationFeatureRow[];
+    stop_detail?: string | null;
+  } | null;
+  message?: string | null;
 }
 
 export type OverrideAction =
@@ -204,6 +248,11 @@ export const JOB_TYPES: JobType[] = [
   "materialize",
   "audit",
   "build",
+  "coverage-index",
+  "coverage-plan",
+  "coverage-run",
+  "coverage-report",
+  "coverage-build",
 ];
 
 export const DISPOSITIONS = [

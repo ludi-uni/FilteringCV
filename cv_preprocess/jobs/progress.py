@@ -74,7 +74,21 @@ class JobProgressWriter:
         if event.message != self._last_flush_message:
             return True
         phase = event.metadata.get("phase") if event.metadata else None
-        if phase in {"prepare", "reserve", "done", "load", "features", "start", "complete", "split"}:
+        if phase in {
+            "prepare",
+            "reserve",
+            "done",
+            "load",
+            "features",
+            "start",
+            "complete",
+            "split",
+            "index",
+            "run",
+            "coverage",
+            "plan",
+            "report",
+        }:
             return True
         now = time.monotonic()
         if (now - self._last_flush_monotonic) >= self._min_interval_sec:

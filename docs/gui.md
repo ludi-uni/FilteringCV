@@ -60,9 +60,9 @@ cv-preprocess gui
 
 - **Setup** — bind an existing YAML or create from `example.yaml` (shown until a config is bound)
 - **Dashboard** — recent runs and stage status
-- **Jobs** — pipeline stages in order (`scan` → `analyze` → `plan-split` → `select` → `materialize` → `audit`), plus **`build`** (recommended one-shot). Each row shows what the stage does and what it produces; start here with **Build** for a first run
-- **Config** — edit the loaded YAML in Form or YAML mode; **Save & overwrite YAML** writes back to the original config path after Pydantic validation. Search and chips (Filters / Builder / Audio / Gates / Changed) help focus speaker filters and related settings
-- **Coverage** — feature distribution vs pool target
+- **Jobs** — pipeline stages in order (`scan` → `analyze` → `plan-split` → `select` → `materialize` → `audit`), plus **`build`** (recommended one-shot). When `coverage.enabled` is true, a second section appears for rare-phoneme automation (`coverage-index` → … → **`coverage-build`**). Each row shows what the stage does and what it produces; start with **Build** for a first corpus run
+- **Config** — edit the loaded YAML in Form or YAML mode; **Save & overwrite YAML** writes back to the original config path after Pydantic validation. Search and chips (Filters / Builder / Audio / Gates / Changed) help focus speaker filters and related settings. Builder chip includes **Coverage automation**
+- **Coverage** — catalog feature-pool stats, plus active coverage-automation run summary when configured
 - **Clips** — paginated catalog browser with audio preview
 - **Run Comparison** — diff two `work/` or output directories
 
@@ -71,12 +71,22 @@ Use **Switch config** in the layout to unbind and return to Setup (blocked while
 ### Jobs order (quick reference)
 
 1. `scan` — corpus / TSV sanity check
-2. `analyze` — catalog + audio cache (heavy)
-3. `plan-split` — train/val/test plan (semantics depend on protocol; see below)
-4. `select` — coverage selection (same)
-5. `materialize` — write final WAV/metadata
-6. `audit` — integrity checks
-★ `build` — runs 1–6 with resume (default choice in the UI)
+2. *(optional, when `coverage.enabled`)* `coverage-index` → `coverage-run` — selective quality analyze **before** full analyze
+3. `analyze` — catalog + audio cache (reuses clips already analyzed by coverage)
+4. `plan-split` — train/val/test plan (semantics depend on protocol; see below)
+5. `select` — coverage selection (same)
+6. `materialize` — write final WAV/metadata
+7. `audit` — integrity checks
+★ `build` — runs the above with resume (inserts coverage before analyze when enabled)
+
+### Coverage automation (optional)
+
+Enable in Config (`coverage.enabled: true`, `insert_before_analyze: true` by default):
+
+- **Build** automatically runs coverage **before** analyze so you do not wait on a full heavy pass first.
+- Or run `coverage-build` alone, then `analyze` / continue Build.
+
+See [coverage-automation.md](coverage-automation.md).
 
 ### Why `plan-split` before `select`?
 
