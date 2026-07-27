@@ -30,7 +30,7 @@ cv-preprocess build -c config/default.yaml
 | Analyze | `analyze` | `work/catalog/*.parquet`, audio cache (Sidon enhance) |
 | Plan split | `plan-split` | `work/plans/split_plan.json` |
 | Select | `select` | `work/plans/selection_plan.parquet` |
-| Materialize | `materialize` | `wavs/` + LJSpeech `validated.tsv` / `metadata.csv` + `metadata.jsonl` + split manifests |
+| Materialize | `materialize` | `wavs/` + LJSpeech manifests + `exports/piper_plus` + `exports/style_bert_vits2` (default on) |
 | Audit | `audit` | Integrity checks |
 | Full pipeline | `build` | All of the above + `run_manifest.json` |
 
@@ -64,6 +64,12 @@ dataset_builder:
     feature_weights: { phone: 1.0, mora: 1.0, quality: 0.2 }
     local_search:
       enabled: true
+    # Default on: reserve clips for coverage.features minima before normal fill
+    coverage_constraints:
+      enabled: true
+      violation_policy: best_effort
+    acoustic_diversity:
+      enabled: true
   speaker_constraints:
     max_duration_minutes: 120
   duplicates:
@@ -77,6 +83,30 @@ dataset_builder:
 compute:
   backend: auto   # auto | polars | python
 ```
+
+## Coverage-aware select (default on)
+
+`select` reserves clips for `coverage.features` targets first, then fills remaining duration with the usual greedy objective. Reports land in `{work_dir}/reports/selection/` (`coverage-audit.csv`, `missing-features.json`, …).
+
+See [coverage-automation.md](coverage-automation.md#coverage-aware-select) and [selection-algorithm.md](selection-algorithm.md#coverage-aware-select).
+
+## Trainer exports (piper_plus / Style-Bert-VITS2)
+
+After materialize, FilteringCV also writes learning layouts under `{output}/exports/` (configurable via `dataset_builder.materialize.trainer_exports`):
+
+| Format | Path | Notes |
+|--------|------|-------|
+| piper_plus | `exports/piper_plus/wav/` + `metadata.csv` | 1 speaker → `id\|text`; 2+ → `id\|speaker\|text` |
+| Style-Bert-VITS2 | `exports/style_bert_vits2/Data/{model}/raw/` + `esd.list` | `file\|speaker\|JP\|text` |
+
+Re-export without re-materialize:
+
+```bash
+cv-preprocess export-trainer -c config/default.yaml -i <materialize_output> --format all
+cv-preprocess export-trainer -c config/default.yaml -i <materialize_output> --format piper_plus --resample
+```
+
+Default keeps original sample rates (`resample: false`). Design: [trainer-exports design](superpowers/specs/2026-07-26-trainer-exports-design.md).
 
 ## Overrides
 

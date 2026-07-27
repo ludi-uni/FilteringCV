@@ -13,6 +13,7 @@ from cv_preprocess.catalog.models import ClipDisposition
 from cv_preprocess.catalog.reader import read_clips
 from cv_preprocess.config import PipelineConfig
 from cv_preprocess.linguistic.features import FeatureSource, extract_linguistic_features
+from cv_preprocess.selection.coverage_keys import coverage_keys_from_clip_parts
 from cv_preprocess.selection.overrides import load_overrides, resolved_overrides_path
 from cv_preprocess.selection.protocol import ClipFeatures, SelectionBackend, SelectionResult
 from cv_preprocess.selection.python_backend import PythonSelectionBackend
@@ -100,6 +101,39 @@ def _clip_features_from_catalog(
                 continue
         clip_id = str(row["clip_id"])
         override = overrides.get(clip_id)
+        phoneme_str = str(row.get("phonemes") or "")
+        text_norm = str(row.get("text_norm") or "")
+        exclude_tokens = config.dataset_builder.feature_support.exclude_tokens
+        coverage_keys: list[str] = []
+        if phoneme_str or text_norm:
+            coverage_keys = coverage_keys_from_clip_parts(
+                normalized_text=text_norm,
+                phoneme_str=phoneme_str,
+                exclude_tokens=exclude_tokens,
+            )
+        acoustic_metrics: dict[str, float | None] = {
+            "duration": float(row.get("duration_sec") or 0.0),
+            "snr": float(row["estimated_snr_db"]) if row.get("estimated_snr_db") is not None else None,
+            "estimated_snr_db": (
+                float(row["estimated_snr_db"]) if row.get("estimated_snr_db") is not None else None
+            ),
+            "silence_ratio": (
+                float(row["silence_ratio"]) if row.get("silence_ratio") is not None else None
+            ),
+            "quality_score": (
+                float(row["quality_score"]) if row.get("quality_score") is not None else None
+            ),
+            "rms": float(row["rms"]) if row.get("rms") is not None else None,
+            "peak": float(row["peak"]) if row.get("peak") is not None else None,
+            "f0_median": float(row["f0_median"]) if row.get("f0_median") is not None else None,
+            "f0_range": float(row["f0_range"]) if row.get("f0_range") is not None else None,
+            "speech_rate": float(row["speech_rate"]) if row.get("speech_rate") is not None else None,
+            "alignment_confidence": (
+                float(row["alignment_confidence"])
+                if row.get("alignment_confidence") is not None
+                else None
+            ),
+        }
         clips.append(
             ClipFeatures(
                 clip_id=clip_id,
@@ -108,11 +142,13 @@ def _clip_features_from_catalog(
                 quality_score=row.get("quality_score"),
                 audio_sha256=str(row.get("audio_sha256") or ""),
                 sentence_id=str(row.get("sentence_id") or ""),
-                text_norm=str(row.get("text_norm") or ""),
+                text_norm=text_norm,
                 features_by_family=_features_from_row(row, config),
                 duplicate_groups=_duplicate_groups_from_row(row),
                 override_action=override.action if override is not None else None,
                 split=assignments.get(clip_id) or row.get("split"),
+                coverage_keys=coverage_keys,
+                acoustic_metrics=acoustic_metrics,
             )
         )
     return clips
@@ -131,11 +167,43 @@ def _resolved_target_duration_sec(config: PipelineConfig) -> float:
 def _resolve_backend(
     config: PipelineConfig,
     backend: str | None,
+    *,
+    index_candidate_counts: dict[str, int] | None = None,
+    coverage_audit_output: Path | None = None,
 ) -> SelectionBackend:
     requested = backend or config.compute.backend
     if requested in {"auto", "python", "polars"}:
-        return PythonSelectionBackend(config.dataset_builder)
+        return PythonSelectionBackend(
+            config.dataset_builder,
+            coverage_config=config.coverage,
+            index_candidate_counts=index_candidate_counts,
+            coverage_audit_output=coverage_audit_output,
+        )
     raise ValueError(f"unsupported selection backend: {requested!r}")
+
+
+def _load_index_candidate_counts(config: PipelineConfig) -> dict[str, int] | None:
+    """Count feature keys from coverage clip-index.jsonl when available."""
+    index_path = Path(config.coverage.output_dir) / "clip-index.jsonl"
+    if not index_path.is_file():
+        # GUI/active-run layout may keep index beside active-run
+        alt = Path(config.coverage.output_dir) / "clip-index.jsonl"
+        if not alt.is_file():
+            return None
+        index_path = alt
+    try:
+        from cv_preprocess.coverage.indexer import load_index_jsonl
+    except Exception:
+        return None
+    counts: dict[str, int] = {}
+    try:
+        records = load_index_jsonl(index_path)
+    except Exception:
+        return None
+    for record in records:
+        for key in record.feature_key_set():
+            counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _run_selection(
@@ -296,6 +364,10 @@ def select_dataset(
     *,
     backend: str | None = None,
     progress: ProgressSink | None = None,
+    coverage_aware: bool | None = None,
+    coverage_policy: str | None = None,
+    coverage_audit_output: Path | None = None,
+    disable_acoustic_diversity: bool = False,
 ) -> SelectionPlan:
     if progress is not None:
         progress(
@@ -306,6 +378,18 @@ def select_dataset(
                 metadata={"phase": "load"},
             )
         )
+
+    # CLI / caller overrides for coverage-aware select (mutate a copy of nested config).
+    selection = config.dataset_builder.selection
+    if coverage_aware is True:
+        selection.coverage_constraints.enabled = True
+    if coverage_policy is not None:
+        selection.coverage_constraints.violation_policy = coverage_policy  # type: ignore[assignment]
+        selection.coverage_constraints.policy = coverage_policy  # type: ignore[assignment]
+    if disable_acoustic_diversity:
+        selection.acoustic_diversity.enabled = False
+        selection.acoustic_diversity.backend = "disabled"
+        selection.feature_weights["acoustic_diversity"] = 0.0
 
     clips_df = read_clips(catalog.resolved_clips_path())
     overrides = load_overrides(resolved_overrides_path(catalog.work_dir))
@@ -334,7 +418,20 @@ def select_dataset(
             )
         )
 
-    selection_backend = _resolve_backend(config, backend)
+    index_counts = None
+    if selection.coverage_constraints.enabled:
+        index_counts = _load_index_candidate_counts(config)
+
+    audit_out = coverage_audit_output
+    if audit_out is None and selection.coverage_constraints.enabled:
+        audit_out = Path(catalog.work_dir) / "reports" / "selection"
+
+    selection_backend = _resolve_backend(
+        config,
+        backend,
+        index_candidate_counts=index_counts,
+        coverage_audit_output=audit_out,
+    )
     target_duration_sec = _resolved_target_duration_sec(config)
     tolerance_ratio = config.dataset_builder.selection.duration.tolerance_ratio
     result = _run_selection(
@@ -386,6 +483,8 @@ def select_dataset(
                     "phase": "complete",
                     "selected": len(result.selected_ids),
                     "reserve": len(result.reserve_ids),
+                    "coverage_warnings": list(result.warnings),
+                    "coverage_report_paths": dict(result.coverage_report_paths),
                 },
             )
         )

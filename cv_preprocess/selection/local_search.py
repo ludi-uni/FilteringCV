@@ -11,6 +11,8 @@ from cv_preprocess.selection.constraints import (
     ConstraintConfig,
     ConstraintState,
     add_clip_to_state,
+    coverage_counts_for_selection,
+    preserves_required_coverage,
 )
 from cv_preprocess.selection.protocol import ClipFeatures
 from cv_preprocess.selection.scoring import (
@@ -123,6 +125,7 @@ def local_search_improve(
     progress_label: str | None = None,
     target_tables: dict[str, dict[str, float]] | None = None,
     seed: int = 0,
+    required_coverage_targets: dict[str, int] | None = None,
 ) -> tuple[list[str], list[str], int]:
     if not selected or not reserve:
         return selected, reserve, 0
@@ -137,6 +140,32 @@ def local_search_improve(
     # Mutable feature counts updated inside _evaluate_set so diminishing-returns
     # scoring follows the trial selection order (same as greedy).
     live_counts: dict[str, Counter[str]] = {family: Counter() for family in feature_weights}
+    required_targets = dict(required_coverage_targets or {})
+
+    def coverage_ok(trial_selected: list[str], removed: list[str], added: list[str]) -> bool:
+        if not required_targets:
+            return True
+        # Multi-swap: apply removals/additions sequentially against current counts.
+        current = coverage_counts_for_selection(selected_set, clips_by_id, required_targets.keys())
+        # Simulate full swap on counts
+        for out_id in removed:
+            out_clip = clips_by_id.get(out_id)
+            if out_clip is None:
+                continue
+            for key in out_clip.coverage_keys:
+                if key in current:
+                    current[key] -= 1
+        for in_id in added:
+            in_clip = clips_by_id.get(in_id)
+            if in_clip is None:
+                continue
+            for key in in_clip.coverage_keys:
+                if key in current:
+                    current[key] += 1
+        for feature, minimum in required_targets.items():
+            if current.get(feature, 0) < minimum:
+                return False
+        return True
 
     score_fn = _build_score_fn(
         feature_weights=feature_weights,
@@ -227,12 +256,25 @@ def local_search_improve(
             for out_id in out_order:
                 if timed_out():
                     break
+                out_clip = clips_by_id.get(out_id)
                 for in_id in in_order:
                     if timed_out() or checks >= max_pair_checks:
                         break
                     if out_id == in_id:
                         continue
+                    in_clip = clips_by_id.get(in_id)
+                    if out_clip is None or in_clip is None:
+                        continue
                     checks += 1
+                    if required_targets and not preserves_required_coverage(
+                        coverage_counts_for_selection(
+                            selected_set, clips_by_id, required_targets.keys()
+                        ),
+                        out_clip,
+                        in_clip,
+                        required_targets,
+                    ):
+                        continue
                     trial_selected = [cid for cid in selected_set if cid != out_id] + [in_id]
                     trial_score, _ = _evaluate_set(
                         trial_selected,
@@ -270,6 +312,8 @@ def local_search_improve(
                     if timed_out() or checks >= max_pair_checks:
                         break
                     checks += 1
+                    if not coverage_ok([cid for cid in selected_set if cid != out_id] + [in_a, in_b], [out_id], [in_a, in_b]):
+                        continue
                     trial_selected = [cid for cid in selected_set if cid != out_id] + [in_a, in_b]
                     trial_score, _ = _evaluate_set(
                         trial_selected,
@@ -312,6 +356,8 @@ def local_search_improve(
                         cid for cid in selected_set if cid not in {out_a, out_b}
                     ] + [in_id]
                     if len(trial_selected) != len(selected_set) - 1:
+                        continue
+                    if not coverage_ok(trial_selected, [out_a, out_b], [in_id]):
                         continue
                     trial_score, _ = _evaluate_set(
                         trial_selected,

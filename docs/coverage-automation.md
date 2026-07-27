@@ -42,34 +42,61 @@ coverage:
   features:
     phoneme:
       enabled: true
+      required: true
       default_target: 0
       targets:
-        ts: 30
-        dy: 30
-        N: 40
+        v: 5
+        fy: 5
+        dy: 5
+        gw: 5
+        py: 20
+        by: 30
+        my: 40
+        ny: 50
+        hy: 80
+        gy: 100
+        ry: 120
     mora:
       enabled: true
+      required: false
       default_target: 0
+      # 索引と同じカタカナ表記（ローマ字 kya ではない）
       targets:
-        kya: 10
+        ニャ: 10
+        ピュ: 5
+        ヴァ: 5
     biphone:
       enabled: true
+      required: false
       default_target: 0
       targets:
-        "a-ts": 8
-        "ts-u": 8
+        "dy-u": 5
+        "gw-a": 5
+        "py-o": 10
     positioned_phoneme:
       enabled: true
+      required: false
       default_target: 0
       targets:
-        "word_initial:ts": 5
+        "word_initial:py": 10
+        "word_initial:ny": 20
 
   required_features:
-    - "phoneme:ts"
+    - "phoneme:v"
+    - "phoneme:fy"
     - "phoneme:dy"
-    - "biphone:ts-u"
+    - "phoneme:gw"
+    - "phoneme:py"
+    - "phoneme:by"
+    - "phoneme:my"
+    - "phoneme:ny"
+    - "phoneme:hy"
+    - "phoneme:gy"
+    - "phoneme:ry"
   optional_features:
-    - "positioned_phoneme:word_initial:ts"
+    - "biphone:dy-u"
+    - "biphone:gw-a"
+    - "positioned_phoneme:word_initial:py"
 
   pass_probability:
     default: 0.5
@@ -99,12 +126,20 @@ coverage:
   rare_rescue:
     enabled: true
     target_features:
-      - "phoneme:ts"
+      - "phoneme:v"
+      - "phoneme:fy"
       - "phoneme:dy"
+      - "phoneme:gw"
+      - "phoneme:py"
+      - "phoneme:by"
+      - "phoneme:my"
+      - "phoneme:ny"
     min_candidate_clips: 1
     min_candidate_speakers: 1
     stricter_quality_gate: true
 ```
+
+網羅版の具体値は `config/default.yaml` / `config/example.yaml` を参照してください。
 
 ## スコアリング
 
@@ -208,6 +243,86 @@ cv-preprocess coverage-report --run-dir output/coverage/run-001
 ## 既存 analyze / select との関係
 
 - **analyze**: 全件カタログ作成。coverage は `analyze_clips()` で部分解析し、既存カタログへマージ
-- **select**: 時間目標に対する限界効用選択。coverage は明示ターゲット件数の充足が目的で別系統
+- **select（従来の限界効用）**: 時間目標に対する貪欲選択は継続
+- **select（coverage-aware・既定オン）**: 同じ `coverage.features` 目標を最終セットの必須制約として予約選択する
 - 成果物の再利用: 既に catalog にある `clip_id` は再解析しない（`reuse_existing=true`）
 - 設定変更や index fingerprint 不一致時は resume を拒否します
+
+## coverage-aware select
+
+Force Build（coverage-run）は希少特徴クリップを eligible に入れる役割、**最終保証は select 側**で行います。
+
+**既定で有効**です（`selection.coverage_constraints.enabled: true`）。Build / 単独 `select` のどちらでも同じ。
+
+```text
+coverage-index → coverage-run → eligible
+  → Phase A: 必須カバレッジ予約（貪欲集合被覆）
+  → Phase B: 既存 greedy で残り時間充填（initial_selected 連携）
+  → Phase C: coverage 保護 local search
+  → Phase D: coverage audit / missing-features
+  → materialize
+```
+
+### 使い方（最短）
+
+1. YAML の `coverage.features` に目標を書く（`config/default.yaml` に例あり）
+2. GUI なら **Jobs → Build**、または CLI で `cv-preprocess build -c config/default.yaml`
+3. select 後に `work/reports/selection/coverage-audit.csv` を見る
+
+| status 例 | 意味 |
+|-----------|------|
+| `configured_target_satisfied` | 設定どおり達成 |
+| `corpus_limit_satisfied` | 設定は高いが eligible 上限まで取れた |
+| `selection_constraint_conflict` | 候補はあるが話者/時間上限などで選べない |
+| `not_present_in_index` / `not_present_in_eligible` | 索引または eligible に特徴が無い → `missing-features.json` |
+
+### 目標の解釈
+
+| YAML | 解釈 |
+|------|------|
+| `v: 5` | `minimum = 5`, `desired = 5`（必須条件として扱う） |
+| `v: {minimum: 2, desired: 5}` | 最低 2 / 希望 5 |
+| `effective_*` | `min(configured_*, eligible_clip_count)`（1 クリップ 1 カウント） |
+
+### 設定例
+
+```yaml
+selection:
+  coverage_constraints:
+    enabled: true                 # 既定。切るときだけ false
+    violation_policy: best_effort   # fail | warn | best_effort
+    use_coverage_targets: true
+    required_families: [phoneme, mora]
+    optional_families: [biphone]
+    preserve_during_local_search: true
+  acoustic_diversity:
+    enabled: true                 # 既定。切るときだけ false
+    backend: lightweight
+    weight: 0.15
+```
+
+### CLI
+
+通常はフラグ不要（既定オン）:
+
+```bash
+cv-preprocess select -c config/default.yaml
+```
+
+上書き用途:
+
+```bash
+cv-preprocess select \
+  --config config/default.yaml \
+  --coverage-aware \
+  --coverage-policy best_effort \
+  --coverage-audit-output work/reports/selection \
+  --disable-acoustic-diversity
+```
+
+出力（既定: `{work_dir}/reports/selection/`）:
+
+- `coverage-audit.json` / `.csv`
+- `coverage-contributions.jsonl`
+- `missing-features.json`
+- `acoustic-diversity-summary.json`

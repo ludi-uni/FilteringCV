@@ -80,6 +80,9 @@ def selection_pipeline_config(
                     "quality": 0.1,
                 },
                 "local_search": {"enabled": False},
+                # Keep legacy selection tests deterministic (no coverage/acoustic side effects).
+                "coverage_constraints": {"enabled": False},
+                "acoustic_diversity": {"enabled": False},
             },
         },
     }

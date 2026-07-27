@@ -64,6 +64,26 @@ Same catalog + config + `random_seed` → same selected set. Tie-break: higher s
 
 Run `cv-preprocess select` after editing overrides or selection weights. Catalog parquet and audio cache are reused.
 
+## Coverage-aware select
+
+**Default: on** (`selection.coverage_constraints.enabled: true`). You do not need `--coverage-aware` for normal runs.
+
+When enabled, selection:
+
+1. Reserves clips for required coverage minima (greedy multi-feature set cover)
+2. Fills remaining duration with the existing marginal-utility greedy loop
+3. Runs local search that refuses swaps breaking `effective_minimum`
+4. Writes coverage audit / missing-features under `{work_dir}/reports/selection/`
+
+Bare coverage targets (`v: 5`) mean `minimum = desired = 5`. Effective targets are capped by eligible clip counts. Speaker selection ranking is unchanged.
+
+Lightweight acoustic redundancy (`selection.acoustic_diversity`, also **on by default**) is a soft penalty below required coverage. Disable with `enabled: false` or `--disable-acoustic-diversity`.
+
+```bash
+cv-preprocess select -c config/default.yaml
+cv-preprocess select -c config/default.yaml --coverage-audit-output work/reports/selection
+```
+
 ## Benchmark
 
 ```bash

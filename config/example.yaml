@@ -131,6 +131,14 @@ dataset_builder:
   random_seed: 42
   selection:
     local_search: { enabled: true, max_iterations: 500, max_seconds: 30, swap_patterns: [1v1] }
+    # 既定オン: coverage.features の目標を最終セットで保証（docs/coverage-automation.md）
+    coverage_constraints:
+      enabled: true
+      violation_policy: best_effort
+    acoustic_diversity:
+      enabled: true
+      backend: lightweight
+      weight: 0.15
   speaker_constraints:
     max_duration_minutes: 120
   split:
@@ -141,17 +149,276 @@ dataset_builder:
   materialize:
     mode: copy
     atomic_rename: true
+    trainer_exports:
+      enabled: true
+      formats: [piper_plus, style_bert_vits2]
+      text_field: text_norm
+      resample: false
+      style_bert_vits2:
+        model_name: filteringcv
+        language: JP
+        packaging: single_model
 
 compute:
   backend: auto
 
 # 希少音素カバレッジ自動化（任意）: docs/coverage-automation.md
 # GUI: Config で enabled を true にしたあと Build を実行（analyze の前に自動差し込み）
-# coverage:
-#   enabled: false
-#   insert_before_analyze: true
-#   output_dir: output/coverage
-#   active_run_dirname: active-run
+# mora キーは索引と同じカタカナ表記（ローマ字 kya 等ではない）
+coverage:
+  enabled: false
+  insert_before_analyze: true
+  output_dir: output/coverage
+  active_run_dirname: active-run
+  counting_mode: per_clip
+  features:
+    phoneme:
+      enabled: true
+      required: true
+      default_target: 0
+      targets:
+        v: 5
+        fy: 5
+        dy: 5
+        gw: 5
+        py: 20
+        by: 30
+        my: 40
+        ny: 50
+        hy: 80
+        gy: 100
+        ry: 120
+        f: 200
+        p: 200
+        ky: 200
+        ts: 300
+    mora:
+      enabled: true
+      required: false
+      default_target: 0
+      targets:
+        キャ: 40
+        キュ: 40
+        キョ: 80
+        ギャ: 30
+        ギュ: 15
+        ギョ: 40
+        シャ: 60
+        シュ: 80
+        ショ: 80
+        ジャ: 50
+        ジュ: 80
+        ジョ: 60
+        チャ: 40
+        チュ: 50
+        チョ: 60
+        シェ: 10
+        ジェ: 15
+        チェ: 15
+        ニャ: 10
+        ニュ: 40
+        ニョ: 8
+        ヒャ: 30
+        ヒュ: 8
+        ヒョ: 40
+        ミャ: 10
+        ミュ: 10
+        ミョ: 30
+        リャ: 20
+        リュ: 25
+        リョ: 50
+        ピャ: 5
+        ピュ: 5
+        ピョ: 15
+        ビャ: 5
+        ビュ: 10
+        ビョ: 20
+        ファ: 30
+        フィ: 25
+        フェ: 12
+        フォ: 20
+        フュ: 5
+        ティ: 30
+        トゥ: 5
+        ディ: 20
+        ドゥ: 5
+        デュ: 5
+        ツァ: 5
+        ツィ: 5
+        ツェ: 5
+        ツォ: 5
+        ウィ: 12
+        ウェ: 12
+        ウォ: 5
+        ヴァ: 5
+        ヴィ: 5
+        ヴェ: 5
+        ヴォ: 5
+        クヮ: 5
+        グヮ: 5
+        ヅ: 5
+    biphone:
+      enabled: true
+      required: false
+      default_target: 0
+      targets:
+        "a-v": 5
+        "u-v": 5
+        "v-a": 5
+        "v-e": 5
+        "o-fy": 5
+        "fy-u": 5
+        "o-dy": 5
+        "dy-u": 5
+        "N-gw": 5
+        "gw-a": 5
+        "i-py": 5
+        "py-a": 5
+        "py-u": 5
+        "py-o": 10
+        "cl-py": 10
+        "N-py": 5
+        "i-by": 5
+        "by-a": 5
+        "by-u": 8
+        "by-o": 15
+        "a-by": 8
+        "N-by": 5
+        "a-my": 5
+        "my-a": 8
+        "my-u": 8
+        "my-o": 20
+        "i-my": 15
+        "N-my": 15
+        "BOS-my": 5
+        "ny-a": 8
+        "ny-u": 30
+        "ny-o": 5
+        "a-ny": 15
+        "i-ny": 15
+        "N-ny": 10
+        "BOS-ny": 15
+        "hy-a": 25
+        "hy-u": 5
+        "hy-o": 40
+        "a-hy": 30
+        "o-hy": 40
+        "BOS-hy": 40
+        "gy-a": 30
+        "gy-u": 15
+        "gy-o": 40
+        "a-gy": 25
+        "i-gy": 20
+        "N-gy": 10
+        "BOS-gy": 20
+        "ry-a": 20
+        "ry-u": 25
+        "ry-o": 50
+        "a-ry": 20
+        "i-ry": 40
+        "u-ry": 40
+        "o-ry": 50
+        "N-ry": 20
+        "BOS-ry": 15
+        "ts-e": 5
+        "t-u": 5
+        "w-o": 5
+    positioned_phoneme:
+      enabled: true
+      required: false
+      default_target: 0
+      targets:
+        "word_initial:v": 3
+        "word_medial:v": 3
+        "word_initial:fy": 3
+        "word_medial:fy": 3
+        "word_initial:dy": 3
+        "word_medial:dy": 3
+        "word_initial:gw": 3
+        "word_medial:gw": 3
+        "word_initial:py": 10
+        "word_medial:py": 15
+        "word_initial:by": 15
+        "word_medial:by": 20
+        "word_initial:my": 5
+        "word_medial:my": 25
+        "word_initial:ny": 20
+        "word_medial:ny": 30
+        "word_initial:hy": 40
+        "word_medial:hy": 50
+        "word_initial:gy": 40
+        "word_medial:gy": 50
+        "word_initial:ry": 30
+        "word_medial:ry": 80
+        "word_initial:f": 50
+        "word_initial:p": 50
+        "word_initial:ts": 80
+        "word_initial:ky": 60
+  required_features:
+    - "phoneme:v"
+    - "phoneme:fy"
+    - "phoneme:dy"
+    - "phoneme:gw"
+    - "phoneme:py"
+    - "phoneme:by"
+    - "phoneme:my"
+    - "phoneme:ny"
+    - "phoneme:hy"
+    - "phoneme:gy"
+    - "phoneme:ry"
+  optional_features:
+    - "phoneme:f"
+    - "phoneme:p"
+    - "phoneme:ky"
+    - "phoneme:ts"
+    - "biphone:dy-u"
+    - "biphone:gw-a"
+    - "biphone:py-o"
+    - "biphone:by-o"
+    - "biphone:my-o"
+    - "biphone:ny-u"
+    - "biphone:hy-o"
+    - "biphone:gy-o"
+    - "biphone:ry-o"
+    - "positioned_phoneme:word_initial:py"
+    - "positioned_phoneme:word_initial:ny"
+    - "positioned_phoneme:word_initial:ry"
+  pass_probability:
+    default: 0.5
+    prior_strength: 10.0
+    min_probability: 0.05
+    max_probability: 0.95
+  analysis_cost:
+    base: 1.0
+    duration_weight: 0.1
+  diversity:
+    speaker_penalty: 0.5
+    duplicate_text_penalty: 1.0
+    max_per_speaker_per_batch: 5
+  batch:
+    min_size: 20
+    max_size: 500
+    safety_factor: 1.3
+  limits:
+    max_iterations: 50
+    max_analyzed_clips: 10000
+    max_audio_hours: 100.0
+  rare_rescue:
+    enabled: true
+    target_features:
+      - "phoneme:v"
+      - "phoneme:fy"
+      - "phoneme:dy"
+      - "phoneme:gw"
+      - "phoneme:py"
+      - "phoneme:by"
+      - "phoneme:my"
+      - "phoneme:ny"
+    min_candidate_clips: 1
+    min_candidate_speakers: 1
+    stricter_quality_gate: true
+  target_weight_default: 1.0
+  required_weight_bonus: 1.5
 
 # 二次パイプライン（任意）: cv-preprocess secondary
 # docs/追加仕様.md §11–§12、BandwidthExtensionStep（uv sync --extra hifigan）

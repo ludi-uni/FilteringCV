@@ -148,6 +148,79 @@ def cmd_materialize(
     )
 
 
+@app.command("export-trainer")
+def cmd_export_trainer(
+    config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+    input_root: Path = typer.Option(
+        ...,
+        "--input",
+        "-i",
+        exists=True,
+        file_okay=False,
+        path_type=Path,
+        help="Materialize output root containing metadata.jsonl and wavs/",
+    ),
+    format_name: str = typer.Option(
+        "all",
+        "--format",
+        "-f",
+        help="piper_plus | style_bert_vits2 | all",
+    ),
+    output_root: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        path_type=Path,
+        help="Exports root (default: <input>/exports)",
+    ),
+    resample: bool = typer.Option(
+        False,
+        "--resample",
+        help="Resample audio to format-specific rates (overrides config when set)",
+    ),
+) -> None:
+    """Re-export a materialize root to piper_plus / Style-Bert-VITS2 layouts."""
+    from cv_preprocess.export.runner import export_from_materialize_root
+
+    cfg = load_config(config)
+    trainer_cfg = cfg.dataset_builder.materialize.trainer_exports
+    fmt = format_name.strip().lower()
+    if fmt == "all":
+        formats = list(trainer_cfg.formats)
+    elif fmt in {"piper_plus", "style_bert_vits2"}:
+        formats = [fmt]  # type: ignore[list-item]
+    else:
+        raise typer.BadParameter("format must be piper_plus, style_bert_vits2, or all")
+
+    results = export_from_materialize_root(
+        materialize_root=input_root,
+        config=trainer_cfg,
+        place_mode=cfg.dataset_builder.materialize.mode,
+        formats=formats,  # type: ignore[arg-type]
+        resample=True if resample else None,
+        exports_root=output_root,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "input": str(input_root),
+                "exports": [
+                    {
+                        "format": r.format,
+                        "output_dir": str(r.output_dir),
+                        "utterance_count": r.utterance_count,
+                        "skipped_empty_text": r.skipped_empty_text,
+                        "warnings": r.warnings,
+                    }
+                    for r in results
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+
+
 @app.command("audit")
 def cmd_audit(
     config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
@@ -225,6 +298,27 @@ def cmd_compare_runs(
 @app.command("select")
 def cmd_select(
     config: Path = typer.Option(..., "--config", "-c", exists=True, path_type=Path),
+    coverage_aware: bool = typer.Option(
+        False,
+        "--coverage-aware",
+        help="Enable coverage-constraint reservation + audit (overrides config)",
+    ),
+    coverage_policy: str | None = typer.Option(
+        None,
+        "--coverage-policy",
+        help="fail | warn | best_effort (overrides selection.coverage_constraints)",
+    ),
+    coverage_audit_output: Path | None = typer.Option(
+        None,
+        "--coverage-audit-output",
+        path_type=Path,
+        help="Directory for coverage-audit / missing-features reports",
+    ),
+    disable_acoustic_diversity: bool = typer.Option(
+        False,
+        "--disable-acoustic-diversity",
+        help="Disable acoustic redundancy penalties for this run",
+    ),
 ) -> None:
     """Dataset builder select: greedy coverage selection from catalog."""
     cfg = load_config(config)
@@ -237,7 +331,15 @@ def cmd_select(
         split_plan = load_split_plan(catalog, split_plan_path)
     else:
         split_plan = plan_dataset_split(cfg, catalog)
-    result = select_dataset(cfg, catalog, split_plan)
+    result = select_dataset(
+        cfg,
+        catalog,
+        split_plan,
+        coverage_aware=True if coverage_aware else None,
+        coverage_policy=coverage_policy,
+        coverage_audit_output=coverage_audit_output,
+        disable_acoustic_diversity=disable_acoustic_diversity,
+    )
     typer.echo(
         json.dumps(
             {

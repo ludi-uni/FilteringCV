@@ -82,7 +82,11 @@ export function Coverage() {
     <div>
       <header className="page-header">
         <h1>Coverage</h1>
-        <p>カタログの特徴量プールと、希少音素カバレッジ自動化の実行状況</p>
+        <p>
+          カタログの特徴量プールと、希少音素カバレッジ自動化の実行状況。
+          最終 select の達成状況は <code>work/reports/selection/coverage-audit.csv</code>（select
+          後に生成・既定オン）。
+        </p>
       </header>
 
       <div className="stack">

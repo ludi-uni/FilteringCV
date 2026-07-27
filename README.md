@@ -47,12 +47,14 @@ YAML で `dataset_builder.enabled: true` のとき、Jobs では次の順で進�
 | 1 | `scan` | コーパス / TSV の件数・パスを確認 | 概要（ジョブ結果） |
 | 2 | `analyze` | 解析・品質ゲート・音声キャッシュ・カタログ作成（重い） | `work/catalog/`、`audio_cache` |
 | 3 | `plan-split` | train / val / test の分割計画（意味はプロトコル依存・下表） | `work/plans/split_plan.json` |
-| 4 | `select` | カバレッジに沿ったクリップ選択（同上） | `work/plans/selection_plan.parquet` |
-| 5 | `materialize` | WAV・メタデータ等を出力ディレクトリへ書き出し | 最終コーパス一式 |
+| 4 | `select` | **coverage 目標を予約したうえで**クリップ選択（既定オン） | `work/plans/selection_plan.parquet`、`work/reports/selection/` |
+| 5 | `materialize` | WAV・メタデータ等を出力。既定で **piper_plus / Style-Bert-VITS2** 用 `exports/` も生成 | 最終コーパス + `exports/` |
 | 6 | `audit` | 選択・分割・出力の整合性チェック | 監査結果 |
 | ★ | **`build`（推奨）** | **scan→（coverage）→analyze→…→audit**（途中成果物があれば再開） | 上記すべて + `run_manifest.json` |
 
-`coverage.enabled: true` のとき、Build は **analyze の前**に希少音素カバレッジ（軽量 index + 有望候補のみ品質解析）を差し込みます。詳細は [docs/coverage-automation.md](docs/coverage-automation.md)。
+`coverage.enabled: true` のとき、Build は **analyze の前**に希少音素カバレッジ（軽量 index + 有望候補のみ品質解析）を差し込みます。
+
+**select は常に coverage-aware** です（`selection.coverage_constraints.enabled: true` が既定）。Force Build で解析した希少特徴を、最終セットでも落とさないようにします。使い方は下の「coverage-aware select」と [docs/coverage-automation.md](docs/coverage-automation.md)。
 
 個別ステージは「analyze だけやり直す」「select だけ再実行」など向けです。`Force` は既存成果物があっても再実行します。
 
@@ -76,7 +78,35 @@ Setup で作った YAML（または [`config/example.yaml`](config/example.yaml)
 - **`input.corpus_root`** … Common Voice の言語ルート（例: `…/ja`）
 - **`speakers.include_client_ids`** … 空なら全話者。絞るなら `client_id` を列挙
 - **`dataset_builder.enabled: true`** … ビルダー（GUI Jobs）を使う場合は true
+- **`coverage.features.*.targets`** … 希少音素などの目標件数（select が最終セットで保証）
 - 音声チェーン / 品質ゲート … [docs/仕様.md](docs/仕様.md)
+
+### coverage-aware select（使い方）
+
+1. Config で `coverage.features` に目標を書く（例: `phoneme.targets.v: 5`）。数値だけなら **minimum = desired = その値**。
+2. （推奨）`coverage.enabled: true` のまま **Build** → Force Build が希少特徴クリップを先に解析して eligible に入れる。
+3. 続く **select**（Build 内でも単独でも）が目標を**先に予約**し、残り時間を通常選択で埋める。
+4. 結果確認: `work/reports/selection/coverage-audit.csv`（達成 / コーパス上限 / 制約衝突など）。不足特徴は `missing-features.json`。
+
+無効化したいときだけ:
+
+```yaml
+selection:
+  coverage_constraints:
+    enabled: false
+  acoustic_diversity:
+    enabled: false
+```
+
+CLI 例:
+
+```bash
+cv-preprocess select -c config/default.yaml
+# 監査出力先を変えるとき:
+cv-preprocess select -c config/default.yaml --coverage-audit-output work/reports/selection
+# 音響多様性だけ切る:
+cv-preprocess select -c config/default.yaml --disable-acoustic-diversity
+```
 
 `config/default.yaml` と `config/*.local.yaml` は gitignore 対象です。
 

@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections import defaultdict
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cv_preprocess.application.common import ProgressEvent
 from cv_preprocess.jobs.models import ProgressRecord
-from cv_preprocess.jobs.store import JobStore
+from cv_preprocess.jobs.store import JobStore, is_retryable_sqlite_error
+
+logger = logging.getLogger(__name__)
 
 ProgressListener = Callable[[ProgressRecord], None]
 
@@ -111,7 +115,33 @@ class JobProgressWriter:
             fraction=event.fraction,
             metadata=dict(event.metadata),
         )
-        saved = self.store.append_progress(record)
+        # Never fail a long analyze/build solely because the job DB hit a
+        # transient 9p/WAL locking error — JSONL remains the durable fallback.
+        try:
+            saved = self.store.append_progress(record)
+        except Exception as exc:
+            if is_retryable_sqlite_error(exc):
+                logger.warning(
+                    "progress sqlite write failed for job %s (%s); continuing via JSONL only",
+                    self.job_id,
+                    exc,
+                )
+            else:
+                logger.exception(
+                    "progress sqlite write failed for job %s; continuing via JSONL only",
+                    self.job_id,
+                )
+            saved = ProgressRecord(
+                id=None,
+                job_id=record.job_id,
+                stage=record.stage,
+                message=record.message,
+                current=record.current,
+                total=record.total,
+                fraction=record.fraction,
+                metadata=record.metadata,
+                created_at=datetime.now(UTC),
+            )
         payload = saved.model_dump(mode="json")
         with self._jsonl_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")

@@ -30,10 +30,48 @@ IMPLEMENTED_FEATURE_FAMILIES = frozenset(
 CountingMode = Literal["per_clip", "occurrence", "per_speaker"]
 
 
+class FeatureTargetSpec(BaseModel):
+    """Per-feature coverage goal.
+
+    Bare integers in YAML (``v: 5``) are normalized to
+    ``minimum == desired == 5`` so Force Build targets remain hard requirements
+    for coverage-aware select.
+    """
+
+    minimum: int = 0
+    desired: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_int(cls, data: Any) -> Any:
+        if isinstance(data, bool):
+            raise ValueError("feature target must be an int or mapping, not bool")
+        if isinstance(data, int):
+            return {"minimum": data, "desired": data}
+        if isinstance(data, dict):
+            payload = dict(data)
+            has_min = "minimum" in payload
+            has_des = "desired" in payload
+            if has_min and not has_des:
+                payload["desired"] = payload["minimum"]
+            elif has_des and not has_min:
+                payload["minimum"] = payload["desired"]
+            return payload
+        return data
+
+    @model_validator(mode="after")
+    def non_negative_and_ordered(self) -> FeatureTargetSpec:
+        if self.minimum < 0 or self.desired < 0:
+            raise ValueError("feature target minimum/desired must be >= 0")
+        if self.desired < self.minimum:
+            object.__setattr__(self, "desired", self.minimum)
+        return self
+
+
 class FeatureFamilyTargetConfig(BaseModel):
     enabled: bool = True
     default_target: int = 0
-    targets: dict[str, int] = Field(default_factory=dict)
+    targets: dict[str, FeatureTargetSpec] = Field(default_factory=dict)
     required: bool = True
 
     @field_validator("default_target")
@@ -43,13 +81,20 @@ class FeatureFamilyTargetConfig(BaseModel):
             raise ValueError("default_target must be >= 0")
         return value
 
-    @field_validator("targets")
+    @field_validator("targets", mode="before")
     @classmethod
-    def non_negative_targets(cls, value: dict[str, int]) -> dict[str, int]:
-        for key, target in value.items():
-            if target < 0:
-                raise ValueError(f"target for {key!r} must be >= 0")
-        return value
+    def coerce_target_values(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        out: dict[str, Any] = {}
+        for key, raw in value.items():
+            if isinstance(raw, bool):
+                raise ValueError(f"target for {key!r} must be an int or mapping, not bool")
+            if isinstance(raw, int):
+                out[key] = {"minimum": raw, "desired": raw}
+            else:
+                out[key] = raw
+        return out
 
 
 class PassProbabilityConfig(BaseModel):
@@ -229,21 +274,27 @@ class CoverageAutomationConfig(BaseModel):
                 raise ValueError(f"required feature {key!r} has no target (set features.*.targets or default_target)")
         return self
 
-    def resolve_target(self, feature_key: str) -> int | None:
-        """Return target count for ``family:token`` or nested positioned keys."""
+    def resolve_target_spec(self, feature_key: str) -> FeatureTargetSpec | None:
+        """Return minimum/desired for ``family:token`` (phone → phoneme)."""
         family, _, rest = feature_key.partition(":")
         if family == "phone":
             family = "phoneme"
-            feature_key = f"phoneme:{rest}"
             rest = feature_key.partition(":")[2]
         cfg = self.features.get(family)
         if cfg is None or not cfg.enabled:
             return None
         if rest in cfg.targets:
-            return int(cfg.targets[rest])
+            return cfg.targets[rest]
         if cfg.default_target > 0:
-            return int(cfg.default_target)
+            return FeatureTargetSpec(minimum=cfg.default_target, desired=cfg.default_target)
         return None
+
+    def resolve_target(self, feature_key: str) -> int | None:
+        """Return desired target count for ``family:token`` (coverage-run compatible)."""
+        spec = self.resolve_target_spec(feature_key)
+        if spec is None:
+            return None
+        return int(spec.desired)
 
     def is_required(self, feature_key: str) -> bool:
         if feature_key in self.required_features:
@@ -267,9 +318,10 @@ class CoverageAutomationConfig(BaseModel):
             if family not in IMPLEMENTED_FEATURE_FAMILIES:
                 continue
             if cfg.targets:
-                for token, target in cfg.targets.items():
-                    if target > 0:
-                        out[f"{family}:{token}"] = int(target)
+                for token, spec in cfg.targets.items():
+                    desired = int(spec.desired)
+                    if desired > 0 or int(spec.minimum) > 0:
+                        out[f"{family}:{token}"] = max(desired, int(spec.minimum))
             elif cfg.default_target > 0:
                 # default_target alone without explicit targets means "track pool tokens later";
                 # planner uses explicit keys only when targets map is empty.
@@ -278,4 +330,25 @@ class CoverageAutomationConfig(BaseModel):
             target = self.resolve_target(key)
             if target is not None and target > 0:
                 out[key if not key.startswith("phone:") else "phoneme:" + key.partition(":")[2]] = int(target)
+        return out
+
+    def iter_active_target_specs(self) -> dict[str, FeatureTargetSpec]:
+        """Build ``feature_key -> FeatureTargetSpec`` for enabled families."""
+        out: dict[str, FeatureTargetSpec] = {}
+        for family, cfg in self.features.items():
+            if not cfg.enabled:
+                continue
+            if family not in IMPLEMENTED_FEATURE_FAMILIES:
+                continue
+            if cfg.targets:
+                for token, spec in cfg.targets.items():
+                    if int(spec.minimum) > 0 or int(spec.desired) > 0:
+                        out[f"{family}:{token}"] = spec
+            elif cfg.default_target > 0:
+                pass
+        for key in self.required_features + self.optional_features:
+            normalized = key if not key.startswith("phone:") else "phoneme:" + key.partition(":")[2]
+            spec = self.resolve_target_spec(normalized)
+            if spec is not None and (spec.minimum > 0 or spec.desired > 0):
+                out[normalized] = spec
         return out

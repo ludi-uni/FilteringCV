@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -16,6 +19,34 @@ from cv_preprocess.jobs.models import (
     ProgressRecord,
 )
 
+logger = logging.getLogger(__name__)
+
+# SQLite WAL needs reliable shared-memory locking. Windows-bind mounts under
+# WSL/Docker (9p / drvfs / fuseblk) frequently raise OperationalError:
+# "locking protocol" / "disk I/O error" under concurrent API + worker access.
+_UNSAFE_FS_TYPES = frozenset(
+    {
+        "9p",
+        "drvfs",
+        "fuse",
+        "fuseblk",
+        "fusectl",
+        "cifs",
+        "smb",
+        "smbfs",
+        "nfs",
+        "nfs4",
+        "afs",
+    }
+)
+
+_RETRYABLE_LOCK_MARKERS = (
+    "locking protocol",
+    "database is locked",
+    "database is busy",
+    "disk i/o error",
+)
+
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
@@ -27,26 +58,157 @@ def _parse_dt(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
+def filesystem_type(path: Path) -> str | None:
+    """Best-effort mount type for ``path`` (Linux ``statvfs`` / ``/proc/mounts``)."""
+    try:
+        import psutil  # optional
+    except Exception:
+        psutil = None  # type: ignore[assignment]
+
+    resolved = Path(path).resolve()
+    if psutil is not None:
+        try:
+            parts = psutil.disk_partitions(all=True)
+            best = None
+            best_len = -1
+            for part in parts:
+                mount = part.mountpoint
+                if resolved == Path(mount) or str(resolved).startswith(str(Path(mount)) + os.sep):
+                    if len(mount) > best_len:
+                        best = part.fstype
+                        best_len = len(mount)
+            if best:
+                return best.lower()
+        except Exception:
+            pass
+
+    try:
+        mounts = Path("/proc/mounts").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    best_fstype = None
+    best_len = -1
+    for line in mounts:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        mountpoint, fstype = parts[1], parts[2]
+        # /proc/mounts escapes spaces as \040
+        mountpoint = mountpoint.replace("\\040", " ")
+        if resolved == Path(mountpoint) or str(resolved).startswith(mountpoint.rstrip("/") + "/"):
+            if len(mountpoint) > best_len:
+                best_fstype = fstype.lower()
+                best_len = len(mountpoint)
+    return best_fstype
+
+
+def prefers_rollback_journal(path: Path) -> bool:
+    """True when WAL is unsafe on the filesystem backing ``path``."""
+    fstype = filesystem_type(path)
+    if fstype is None:
+        # WSL/Docker Desktop often mounts Windows drives at /mnt/* or bind-mounts
+        # the project at /workspace from a Windows host (seen as 9p).
+        resolved = str(Path(path).resolve())
+        if resolved.startswith("/mnt/"):
+            return True
+        return False
+    return fstype in _UNSAFE_FS_TYPES or fstype.startswith("fuse")
+
+
+def is_retryable_sqlite_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return any(marker in message for marker in _RETRYABLE_LOCK_MARKERS)
+
+
 class JobStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._use_wal = not prefers_rollback_journal(self.db_path)
         self._init_db()
+
+    def _configure_connection(self, conn: sqlite3.Connection) -> None:
+        conn.row_factory = sqlite3.Row
+        # timeout= on connect is soft; busy_timeout is the authoritative wait.
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        # Avoid mmap on flaky network/9p mounts.
+        if not self._use_wal:
+            try:
+                conn.execute("PRAGMA mmap_size=0")
+            except sqlite3.Error:
+                pass
+            conn.execute("PRAGMA synchronous=FULL")
+        else:
+            conn.execute("PRAGMA synchronous=NORMAL")
+
+    def _apply_journal_mode(self, conn: sqlite3.Connection) -> str:
+        desired = "WAL" if self._use_wal else "DELETE"
+        try:
+            mode = str(conn.execute(f"PRAGMA journal_mode={desired}").fetchone()[0]).lower()
+        except sqlite3.OperationalError as exc:
+            logger.warning(
+                "sqlite journal_mode=%s failed on %s (%s); falling back to DELETE",
+                desired,
+                self.db_path,
+                exc,
+            )
+            self._use_wal = False
+            mode = str(conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]).lower()
+        if desired == "WAL" and mode != "wal":
+            # Filesystem accepted the pragma call but did not enable WAL.
+            self._use_wal = False
+            mode = str(conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]).lower()
+        return mode
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
+        conn = sqlite3.connect(self.db_path, timeout=30.0, isolation_level="DEFERRED")
+        self._configure_connection(conn)
         try:
             yield conn
             conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            raise
         finally:
             conn.close()
 
+    def _run_write(self, operation: Any, *, attempts: int = 8) -> Any:
+        """Retry transient lock / 9p protocol errors on write transactions."""
+        last_exc: BaseException | None = None
+        for attempt in range(attempts):
+            try:
+                with self._connect() as conn:
+                    return operation(conn)
+            except sqlite3.OperationalError as exc:
+                last_exc = exc
+                if not is_retryable_sqlite_error(exc) or attempt >= attempts - 1:
+                    raise
+                # If WAL is the culprit, switch mid-process and retry.
+                if "locking protocol" in str(exc).lower() and self._use_wal:
+                    logger.warning(
+                        "sqlite locking protocol on %s; switching journal_mode to DELETE",
+                        self.db_path,
+                    )
+                    self._use_wal = False
+                    try:
+                        with self._connect() as conn:
+                            self._apply_journal_mode(conn)
+                    except sqlite3.Error:
+                        pass
+                time.sleep(0.05 * (2**attempt))
+        assert last_exc is not None
+        raise last_exc
+
     def _init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA foreign_keys=ON")
+        def _init(conn: sqlite3.Connection) -> None:
+            self._apply_journal_mode(conn)
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -82,10 +244,13 @@ class JobStore:
                 """
             )
 
+        self._run_write(_init)
+
     def create_job(self, *, job_type: JobType, config_path: Path, force: bool = False) -> JobRecord:
         job_id = uuid.uuid4().hex
         now = _utc_now()
-        with self._connect() as conn:
+
+        def _insert(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
                 INSERT INTO jobs (
@@ -102,6 +267,8 @@ class JobStore:
                     now,
                 ),
             )
+
+        self._run_write(_insert)
         return self.get_job(job_id)
 
     def get_job(self, job_id: str) -> JobRecord:
@@ -156,16 +323,20 @@ class JobStore:
             values.append(json.dumps(result, ensure_ascii=False))
 
         values.append(job_id)
-        with self._connect() as conn:
+
+        def _update(conn: sqlite3.Connection) -> None:
             conn.execute(
                 f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?",
                 tuple(values),
             )
+
+        self._run_write(_update)
         return self.get_job(job_id)
 
     def mark_stale_running_as_interrupted(self) -> int:
         now = _utc_now()
-        with self._connect() as conn:
+
+        def _mark(conn: sqlite3.Connection) -> int:
             cursor = conn.execute(
                 """
                 UPDATE jobs
@@ -184,6 +355,8 @@ class JobStore:
             )
             return int(cursor.rowcount)
 
+        return int(self._run_write(_mark))
+
     def has_active_jobs(self) -> bool:
         active = (
             JobStatus.QUEUED.value,
@@ -200,7 +373,8 @@ class JobStore:
     def append_progress(self, record: ProgressRecord) -> ProgressRecord:
         now = _utc_now()
         metadata_json = json.dumps(record.metadata, ensure_ascii=False)
-        with self._connect() as conn:
+
+        def _insert(conn: sqlite3.Connection) -> int:
             cursor = conn.execute(
                 """
                 INSERT INTO progress_events (
@@ -218,7 +392,9 @@ class JobStore:
                     now,
                 ),
             )
-            progress_id = int(cursor.lastrowid)
+            return int(cursor.lastrowid)
+
+        progress_id = int(self._run_write(_insert))
         return ProgressRecord(
             id=progress_id,
             job_id=record.job_id,

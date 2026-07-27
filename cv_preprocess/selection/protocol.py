@@ -21,6 +21,10 @@ class ClipFeatures:
     duplicate_groups: dict[str, str] = field(default_factory=dict)
     override_action: str | None = None
     split: str | None = None
+    #: Coverage feature keys (``phoneme:v``, ``mora:…``) aligned with coverage-run.
+    coverage_keys: list[str] = field(default_factory=list)
+    #: Optional acoustic metrics for lightweight diversity (rms, snr, …).
+    acoustic_metrics: dict[str, float | None] = field(default_factory=dict)
 
 
 @dataclass
@@ -31,6 +35,8 @@ class SelectionExplanation:
     penalties: dict[str, Any] = field(default_factory=dict)
     selected_reason: str | None = None
     reserve_reason: str | None = None
+    selection_phase: str | None = None
+    coverage_contributions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -38,6 +44,12 @@ class SelectionResult:
     selected_ids: list[str]
     reserve_ids: list[str]
     explanations: dict[str, SelectionExplanation] = field(default_factory=dict)
+    coverage_audit: dict[str, Any] | None = None
+    coverage_contributions: list[dict[str, Any]] = field(default_factory=list)
+    acoustic_summary: dict[str, Any] | None = None
+    missing_features: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    coverage_report_paths: dict[str, str] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -51,4 +63,5 @@ class SelectionBackend(Protocol):
         seed: int,
         progress: ProgressSink | None = None,
         progress_label: str | None = None,
+        initial_selected: list[str] | None = None,
     ) -> SelectionResult: ...

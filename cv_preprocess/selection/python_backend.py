@@ -4,9 +4,11 @@ import heapq
 import random
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from cv_preprocess.application.common import ProgressEvent, ProgressSink
+from cv_preprocess.config.coverage import CoverageAutomationConfig
 from cv_preprocess.config.dataset_builder import (
     DatasetBuilderConfig,
     DuplicatesConfig,
@@ -14,11 +16,27 @@ from cv_preprocess.config.dataset_builder import (
     SelectionConfig,
     SpeakerConstraintsConfig,
 )
+from cv_preprocess.selection.acoustic_diversity import (
+    AcousticDiversityState,
+    build_acoustic_diversity_state,
+    resolve_acoustic_weight,
+    summarize_acoustic_diversity,
+)
 from cv_preprocess.selection.constraints import (
     ConstraintConfig,
     ConstraintState,
     add_clip_to_state,
     can_add_clip,
+)
+from cv_preprocess.selection.coverage_audit import (
+    audit_coverage,
+    build_missing_feature_requests,
+    write_coverage_audit_reports,
+)
+from cv_preprocess.selection.coverage_reservation import reserve_coverage_clips
+from cv_preprocess.selection.coverage_targets import (
+    SelectionCoverageConstraints,
+    build_selection_coverage_constraints,
 )
 from cv_preprocess.selection.local_search import local_search_improve
 from cv_preprocess.selection.protocol import (
@@ -39,6 +57,9 @@ from cv_preprocess.selection.scoring import (
 @dataclass
 class PythonSelectionBackend:
     config: DatasetBuilderConfig
+    coverage_config: CoverageAutomationConfig | None = None
+    index_candidate_counts: dict[str, int] | None = None
+    coverage_audit_output: Path | None = None
 
     def select(
         self,
@@ -49,6 +70,7 @@ class PythonSelectionBackend:
         seed: int,
         progress: ProgressSink | None = None,
         progress_label: str | None = None,
+        initial_selected: list[str] | None = None,
     ) -> SelectionResult:
         return greedy_local_search(
             candidates,
@@ -58,6 +80,10 @@ class PythonSelectionBackend:
             seed=seed,
             progress=progress,
             progress_label=progress_label,
+            initial_selected=initial_selected,
+            coverage_config=self.coverage_config,
+            index_candidate_counts=self.index_candidate_counts,
+            coverage_audit_output=self.coverage_audit_output,
         )
 
 
@@ -173,6 +199,10 @@ def greedy_local_search(
     seed: int,
     progress: ProgressSink | None = None,
     progress_label: str | None = None,
+    initial_selected: list[str] | None = None,
+    coverage_config: CoverageAutomationConfig | None = None,
+    index_candidate_counts: dict[str, int] | None = None,
+    coverage_audit_output: Path | None = None,
 ) -> SelectionResult:
     selection = config.selection
     feature_weights = dict(selection.feature_weights)
@@ -223,6 +253,8 @@ def greedy_local_search(
     }
     selected: list[str] = []
     explanations: dict[str, SelectionExplanation] = {}
+    contribution_rows: list[dict] = []
+    warnings: list[str] = []
     forced_include = [clip for clip in eligible if clip.override_action == "force_include"]
     forced_exclude = {
         clip.clip_id
@@ -238,6 +270,40 @@ def greedy_local_search(
     speaker_diversity_weight = feature_weights.get("speaker_diversity", 0.0)
     # Pre-dedupe tokens once; scoring is O(features) and called millions of times.
     features_cache = {clip.clip_id: dedupe_clip_features(clip) for clip in eligible}
+
+    coverage_constraints: SelectionCoverageConstraints | None = None
+    required_coverage_targets: dict[str, int] = {}
+    conflict_features: set[str] = set()
+    if (
+        selection.coverage_constraints.enabled
+        and coverage_config is not None
+        and coverage_config.features
+    ):
+        coverage_constraints = build_selection_coverage_constraints(
+            coverage_config,
+            selection,
+            eligible,
+            index_candidate_counts=index_candidate_counts,
+        )
+        required_coverage_targets = coverage_constraints.effective_required_minimums()
+
+    acoustic_weight = resolve_acoustic_weight(feature_weights, selection.acoustic_diversity)
+    acoustic_cfg = selection.acoustic_diversity
+    # Disable acoustic backend when weight is 0 even if enabled flag is set via feature_weights only
+    acoustic_enabled = bool(acoustic_cfg.enabled) or acoustic_weight > 0
+    if acoustic_enabled and acoustic_cfg.backend != "disabled" and acoustic_weight > 0:
+        # Avoid mutating pydantic model; pass weight override
+        acoustic_state = build_acoustic_diversity_state(
+            eligible,
+            acoustic_cfg.model_copy(update={"enabled": True, "weight": acoustic_weight}),
+        )
+    else:
+        acoustic_state = AcousticDiversityState(
+            enabled=False,
+            backend_name=acoustic_cfg.backend,
+            feature_names=list(acoustic_cfg.features),
+            weight=0.0,
+        )
 
     def report_greedy(*, force: bool = False, remaining_n: int = 0) -> None:
         nonlocal last_progress_at
@@ -284,8 +350,8 @@ def greedy_local_search(
             target_tables=target_tables,
         )
 
-    def score_only(clip: ClipFeatures) -> float:
-        return score_clip_fast(
+    def score_only(clip: ClipFeatures, *, ignore_acoustic: bool = False) -> float:
+        base = score_clip_fast(
             clip,
             feature_weights=feature_weights,
             diminishing_tau=diminishing_tau,
@@ -296,9 +362,23 @@ def greedy_local_search(
             speaker_diversity_weight=speaker_diversity_weight,
             features_by_family=features_cache.get(clip.clip_id),
         )
+        if ignore_acoustic or not acoustic_state.enabled:
+            return base
+        # Lower priority than required coverage: acoustic is a soft penalty only.
+        return base - acoustic_state.redundancy_penalty(clip.clip_id)
 
-    def commit_selection(clip: ClipFeatures, reason: str) -> None:
+    def commit_selection(
+        clip: ClipFeatures,
+        reason: str,
+        *,
+        phase: str | None = None,
+        coverage_contribs: list[str] | None = None,
+    ) -> None:
         clip_score, positive, penalties = explain_clip(clip)
+        if acoustic_state.enabled:
+            penalties = dict(penalties)
+            penalties["acoustic_redundancy"] = acoustic_state.redundancy_penalty(clip.clip_id)
+            clip_score -= penalties["acoustic_redundancy"]
         selected.append(clip.clip_id)
         add_clip_to_state(clip, state, constraint_config)
         for family, tokens in clip.features_by_family.items():
@@ -309,17 +389,90 @@ def greedy_local_search(
             positive_contributions=positive,
             penalties=penalties,
             selected_reason=reason,
+            selection_phase=phase,
+            coverage_contributions=list(coverage_contribs or []),
         )
+        acoustic_state.note_selected(clip.clip_id)
 
     for clip in sorted(forced_include, key=lambda c: c.clip_id):
         ok, penalties = can_add_clip(clip, state, constraint_config)
         if ok and state.total_duration_sec + clip.duration_sec <= max_duration:
-            commit_selection(clip, "force_include")
+            commit_selection(clip, "force_include", phase="force_include")
         else:
             explanations[clip.clip_id] = SelectionExplanation(
                 selection_score=0.0,
                 penalties=penalties,
                 reserve_reason="force_include_blocked_by_constraints",
+            )
+
+    # Seed with caller-provided initial selection (e.g. external reservation).
+    for clip_id in initial_selected or []:
+        if clip_id in selected or clip_id in forced_exclude:
+            continue
+        clip = clips_by_id.get(clip_id)
+        if clip is None:
+            continue
+        ok, penalties = can_add_clip(clip, state, constraint_config)
+        if ok and state.total_duration_sec + clip.duration_sec <= max_duration:
+            commit_selection(clip, "initial_selected", phase="initial_selected")
+        else:
+            explanations[clip_id] = SelectionExplanation(
+                selection_score=0.0,
+                penalties=penalties,
+                reserve_reason="initial_selected_blocked_by_constraints",
+            )
+
+    # Phase A: coverage reservation (required minima). Acoustic penalty ignored.
+    if coverage_constraints is not None and coverage_constraints.enabled:
+        _emit_progress(
+            progress,
+            phase="coverage_reservation",
+            message="reserving clips for required coverage minima",
+            current=len(selected),
+            total=max(len(eligible), 1),
+            fraction=0.05,
+            label=progress_label,
+        )
+        seed_counts: dict[str, int] = {key: 0 for key in coverage_constraints.targets}
+        for clip_id in selected:
+            for key in coverage_constraints.clip_coverage_keys.get(clip_id, set()):
+                if key in seed_counts:
+                    seed_counts[key] += 1
+        reservation = reserve_coverage_clips(
+            eligible,
+            coverage_constraints,
+            constraint_config=constraint_config,
+            initial_state=state,
+            initial_selected_counts=seed_counts,
+            max_duration_sec=max_duration,
+            forced_exclude=forced_exclude | set(selected),
+        )
+        conflict_features = set(reservation.conflict_features)
+        for record in reservation.records:
+            if record.clip_id in selected:
+                continue
+            clip = clips_by_id[record.clip_id]
+            contrib_features = [c.feature for c in record.coverage_contributions]
+            commit_selection(
+                clip,
+                "coverage_reserved",
+                phase="coverage_reservation",
+                coverage_contribs=contrib_features,
+            )
+            contribution_rows.append(
+                {
+                    "clip_id": record.clip_id,
+                    "selection_phase": "coverage_reservation",
+                    "coverage_contributions": [asdict(c) for c in record.coverage_contributions],
+                    "quality_score": record.quality_score,
+                    "duration_sec": record.duration_sec,
+                    "speaker_id": record.speaker_id,
+                }
+            )
+        if reservation.conflict_features:
+            warnings.append(
+                "selection_constraint_conflict features: "
+                + ", ".join(sorted(reservation.conflict_features))
             )
 
     remaining_ids = {
@@ -409,17 +562,16 @@ def greedy_local_search(
             heapq.heapify(heap)
             steps_since_rebuild = 0
 
-        clip_score, positive, penalties = explain_clip(best_clip)
-        selected.append(best_clip.clip_id)
-        add_clip_to_state(best_clip, state, constraint_config)
-        for family, tokens in best_clip.features_by_family.items():
-            for token in tokens:
-                current_counts_by_family.setdefault(family, Counter())[token] += 1
-        explanations[best_clip.clip_id] = SelectionExplanation(
-            selection_score=clip_score,
-            positive_contributions=positive,
-            penalties=penalties,
-            selected_reason="greedy_marginal_utility",
+        commit_selection(best_clip, "greedy_marginal_utility", phase="normal_fill")
+        contribution_rows.append(
+            {
+                "clip_id": best_clip.clip_id,
+                "selection_phase": "normal_fill",
+                "coverage_contributions": [],
+                "quality_score": best_clip.quality_score,
+                "duration_sec": best_clip.duration_sec,
+                "speaker_id": best_clip.speaker_id,
+            }
         )
         remaining_ids.discard(best_clip.clip_id)
         greedy_steps += 1
@@ -466,6 +618,15 @@ def greedy_local_search(
     if len(ls_reserve_ids) > max_ls_reserve:
         ls_reserve_ids = ls_reserve_ids[:max_ls_reserve]
 
+    ls_required = (
+        required_coverage_targets
+        if (
+            coverage_constraints is not None
+            and coverage_constraints.preserve_during_local_search
+        )
+        else None
+    )
+
     if selection.local_search.enabled and selected and ls_reserve_ids:
         selected, ls_reserve_ids, _ = local_search_improve(
             selected,
@@ -485,6 +646,7 @@ def greedy_local_search(
             progress_label=progress_label,
             target_tables=target_tables,
             seed=seed,
+            required_coverage_targets=ls_required,
         )
         # Merge local-search reserve head back into full reserve ordering.
         ls_set = set(ls_reserve_ids)
@@ -516,6 +678,67 @@ def greedy_local_search(
     rng.shuffle(tail)
     reserve_ids = head + tail
 
+    # Ensure contribution rows exist for all selected (including post-LS moves).
+    contrib_ids = {row["clip_id"] for row in contribution_rows}
+    for clip_id in selected:
+        if clip_id in contrib_ids:
+            continue
+        clip = clips_by_id.get(clip_id)
+        explanation = explanations.get(clip_id)
+        phase = (
+            getattr(explanation, "selection_phase", None)
+            or getattr(explanation, "selected_reason", None)
+            or "normal_fill"
+        )
+        contribution_rows.append(
+            {
+                "clip_id": clip_id,
+                "selection_phase": phase,
+                "coverage_contributions": [],
+                "quality_score": clip.quality_score if clip else None,
+                "duration_sec": clip.duration_sec if clip else None,
+                "speaker_id": clip.speaker_id if clip else None,
+            }
+        )
+
+    coverage_audit_payload = None
+    missing_payload: list[dict] = []
+    acoustic_summary = summarize_acoustic_diversity(acoustic_state, selected)
+    report_paths: dict[str, str] = {}
+
+    if coverage_constraints is not None and coverage_constraints.enabled:
+        audit = audit_coverage(
+            coverage_constraints,
+            selected,
+            clips_by_id,
+            conflict_features=conflict_features,
+        )
+        warnings.extend(audit.warnings)
+        missing = build_missing_feature_requests(audit)
+        missing_payload = [asdict(m) for m in missing]
+        coverage_audit_payload = {
+            "summary": audit.summary,
+            "warnings": audit.warnings,
+            "features": [asdict(r) for r in audit.rows],
+        }
+        out_dir = coverage_audit_output
+        if out_dir is None:
+            out_dir = Path(config.work_dir) / "reports" / "selection"
+        paths = write_coverage_audit_reports(
+            out_dir,
+            audit,
+            contributions=contribution_rows,
+            acoustic_summary=acoustic_summary,
+            missing=missing,
+        )
+        report_paths = {key: str(path) for key, path in paths.items()}
+        if audit.should_fail:
+            raise RuntimeError(
+                "coverage-aware select failed required coverage minima "
+                f"(policy={coverage_constraints.violation_policy}); "
+                f"see {out_dir / 'coverage-audit.json'}"
+            )
+
     _emit_progress(
         progress,
         phase="done",
@@ -532,4 +755,10 @@ def greedy_local_search(
         selected_ids=selected,
         reserve_ids=reserve_ids,
         explanations=explanations,
+        coverage_audit=coverage_audit_payload,
+        coverage_contributions=contribution_rows,
+        acoustic_summary=acoustic_summary,
+        missing_features=missing_payload,
+        warnings=warnings,
+        coverage_report_paths=report_paths,
     )

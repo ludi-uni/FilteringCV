@@ -51,19 +51,20 @@ export const JOB_PIPELINE: JobPipelineItem[] = [
     step: 4,
     label: "Select",
     summary:
-      "言語カバレッジを満たすようクリップを貪欲選択する。unseen_speaker では split ごとのバケット内で選択。それ以外は全体選択のあとクリップに split を付与（感覚的には select→split）。overrides 再適用もここ。",
+      "coverage.features の必須目標を先に予約し、残り時間を貪欲選択で埋める（coverage-aware は既定オン）。監査は work/reports/selection/。unseen_speaker はバケット内選択、それ以外は全体選択のあと split 付与。",
     kind: "stage",
     section: "builder",
-    produces: "work/plans/selection_plan.parquet",
+    produces: "work/plans/selection_plan.parquet、work/reports/selection/coverage-audit.*",
   },
   {
     type: "materialize",
     step: 5,
     label: "Materialize",
-    summary: "選択クリップを最終出力（WAV・メタデータ・分割マニフェスト）へ書き出す。",
+    summary:
+      "選択クリップを最終出力へ書き出す。既定で exports/piper_plus と exports/style_bert_vits2 も生成（trainer_exports）。",
     kind: "stage",
     section: "builder",
-    produces: "output wavs / validated.tsv / metadata.jsonl など",
+    produces: "output wavs / metadata.* / exports/piper_plus / exports/style_bert_vits2",
   },
   {
     type: "audit",

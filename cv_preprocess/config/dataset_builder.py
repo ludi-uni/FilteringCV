@@ -200,6 +200,69 @@ class DurationSelectionConfig(BaseModel):
         return value
 
 
+class CoverageConstraintsConfig(BaseModel):
+    """Connect Force Build coverage targets to final select guarantees."""
+
+    #: On by default: select reserves clips for ``coverage.features`` minima.
+    enabled: bool = True
+    #: Alias accepted in YAML; mirrored onto ``violation_policy``.
+    policy: Literal["fail", "warn", "best_effort"] | None = None
+    violation_policy: Literal["fail", "warn", "best_effort"] = "best_effort"
+    use_coverage_targets: bool = True
+    required_families: list[str] = Field(default_factory=lambda: ["phoneme", "mora"])
+    optional_families: list[str] = Field(default_factory=lambda: ["biphone"])
+    preserve_during_local_search: bool = True
+    quality_weight: float = 0.1
+    diversity_weight: float = 0.05
+    duration_penalty_weight: float = 0.01
+    required_weight_default: float = 1.0
+    optional_weight_default: float = 0.35
+
+    @model_validator(mode="after")
+    def resolve_policy_alias(self) -> CoverageConstraintsConfig:
+        if self.policy is not None:
+            object.__setattr__(self, "violation_policy", self.policy)
+        return self
+
+
+class AcousticDiversityConfig(BaseModel):
+    """Lightweight acoustic redundancy control (no heavy embedding downloads)."""
+
+    #: On by default; set ``enabled: false`` or use ``--disable-acoustic-diversity`` to turn off.
+    enabled: bool = True
+    backend: Literal["lightweight", "disabled", "wavlm", "hubert", "wav2vec2", "external"] = (
+        "lightweight"
+    )
+    weight: float = 0.15
+    features: list[str] = Field(
+        default_factory=lambda: [
+            "duration",
+            "rms",
+            "snr",
+            "silence_ratio",
+            "quality_score",
+        ]
+    )
+    missing_value_policy: Literal["ignore", "zero"] = "ignore"
+
+    @field_validator("weight")
+    @classmethod
+    def non_negative_weight(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("acoustic_diversity.weight must be >= 0")
+        return value
+
+    @model_validator(mode="after")
+    def backend_available(self) -> AcousticDiversityConfig:
+        heavy = {"wavlm", "hubert", "wav2vec2", "external"}
+        if self.backend in heavy:
+            raise ValueError(
+                f"acoustic_diversity.backend={self.backend!r} is reserved for future use; "
+                "use 'lightweight' or 'disabled' in this release"
+            )
+        return self
+
+
 class SelectionConfig(BaseModel):
     reserve_ratio: float = 0.1
     feature_weights: dict[str, float] = Field(
@@ -226,6 +289,10 @@ class SelectionConfig(BaseModel):
     quality: QualitySelectionConfig = Field(default_factory=QualitySelectionConfig)
     duration: DurationSelectionConfig = Field(default_factory=DurationSelectionConfig)
     local_search: LocalSearchConfig = Field(default_factory=LocalSearchConfig)
+    coverage_constraints: CoverageConstraintsConfig = Field(
+        default_factory=CoverageConstraintsConfig
+    )
+    acoustic_diversity: AcousticDiversityConfig = Field(default_factory=AcousticDiversityConfig)
 
     @model_validator(mode="before")
     @classmethod
@@ -359,11 +426,67 @@ class FeatureSupportConfig(BaseModel):
         return value
 
 
+class PiperPlusExportConfig(BaseModel):
+    sample_rate: int = 22050
+    wav_dirname: str = "wav"
+
+    @field_validator("sample_rate")
+    @classmethod
+    def positive_rate(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("piper_plus.sample_rate must be > 0")
+        return value
+
+
+class StyleBertVits2ExportConfig(BaseModel):
+    sample_rate: int = 44100
+    model_name: str = "filteringcv"
+    language: str = "JP"
+    packaging: Literal["single_model", "per_speaker"] = "single_model"
+
+    @field_validator("sample_rate")
+    @classmethod
+    def positive_rate(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("style_bert_vits2.sample_rate must be > 0")
+        return value
+
+    @field_validator("model_name")
+    @classmethod
+    def non_empty_model(cls, value: str) -> str:
+        if not str(value).strip():
+            raise ValueError("style_bert_vits2.model_name must be non-empty")
+        return str(value).strip()
+
+
+class TrainerExportsConfig(BaseModel):
+    """Write piper_plus / Style-Bert-VITS2 packs under materialize ``exports/``."""
+
+    enabled: bool = True
+    formats: list[Literal["piper_plus", "style_bert_vits2"]] = Field(
+        default_factory=lambda: ["piper_plus", "style_bert_vits2"]
+    )
+    text_field: Literal["text_norm", "text_raw"] = "text_norm"
+    resample: bool = False
+    #: When null, inherit ``materialize.mode``.
+    mode: Literal["copy", "hardlink", "symlink"] | None = None
+    piper_plus: PiperPlusExportConfig = Field(default_factory=PiperPlusExportConfig)
+    style_bert_vits2: StyleBertVits2ExportConfig = Field(default_factory=StyleBertVits2ExportConfig)
+
+    @field_validator("formats")
+    @classmethod
+    def non_empty_formats(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("trainer_exports.formats must not be empty when used")
+        return value
+
+
 class MaterializeConfig(BaseModel):
     mode: Literal["copy", "hardlink", "symlink"] = "copy"
     output_root: Path | None = None
     atomic_rename: bool = True
     emit_run_manifest: bool = True
+    trainer_exports: TrainerExportsConfig = Field(default_factory=TrainerExportsConfig)
 
 
 class DatasetBuilderConfig(BaseModel):

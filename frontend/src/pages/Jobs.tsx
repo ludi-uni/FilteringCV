@@ -268,6 +268,8 @@ export function Jobs() {
           <p className="job-pipeline-intro">
             推奨順は <code>scan</code> → <strong>coverage-*</strong> → <code>analyze</code> → … です。
             Build は <code>coverage.enabled</code> のとき coverage を analyze の前に実行し、既解析クリップは再利用します。
+            <strong>select は coverage-aware が既定オン</strong>（<code>coverage.features</code>{" "}
+            目標を最終セットで予約保証。監査は <code>work/reports/selection/</code>）。
             Jobs 上は常に <code>plan-split</code> → <code>select</code> ですが、
             <strong>unseen_speaker</strong> では「話者割当→各バケット内 select」、
             <strong>seen_speaker / single_speaker</strong> では「全体 select→あとでクリップに split」です。

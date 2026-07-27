@@ -13,6 +13,7 @@ from cv_preprocess.catalog import CatalogRef
 from cv_preprocess.catalog.models import ClipDisposition
 from cv_preprocess.catalog.reader import read_clips
 from cv_preprocess.config import PipelineConfig
+from cv_preprocess.export.runner import run_trainer_exports
 from cv_preprocess.pipeline.ljspeech_tsv import write_ljspeech_validated_tsv
 
 
@@ -296,6 +297,17 @@ def materialize_dataset(
     if run_manifest_src.is_file():
         _copy_or_link_file(run_manifest_src, staging_root / "run_manifest.json", mode)
         manifest_paths.append(str(staging_root / "run_manifest.json"))
+
+    trainer_cfg = config.dataset_builder.materialize.trainer_exports
+    if trainer_cfg.enabled:
+        export_results = run_trainer_exports(
+            materialize_root=staging_root,
+            exports_root=staging_root / "exports",
+            config=trainer_cfg,
+            place_mode=mode,  # type: ignore[arg-type]
+        )
+        for export in export_results:
+            manifest_paths.append(str(export.output_dir))
 
     if config.dataset_builder.materialize.atomic_rename:
         _publish_staging_dir(staging_root, output_root)

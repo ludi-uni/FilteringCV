@@ -74,17 +74,26 @@ Use **Switch config** in the layout to unbind and return to Setup (blocked while
 2. *(optional, when `coverage.enabled`)* `coverage-index` → `coverage-run` — selective quality analyze **before** full analyze
 3. `analyze` — catalog + audio cache (reuses clips already analyzed by coverage)
 4. `plan-split` — train/val/test plan (semantics depend on protocol; see below)
-5. `select` — coverage selection (same)
-6. `materialize` — write final WAV/metadata
+5. `select` — **coverage-aware（既定オン）**: `coverage.features` の必須目標を予約してから残りを貪欲選択。監査は `work/reports/selection/`
+6. `materialize` — write final WAV/metadata; by default also `exports/piper_plus` and `exports/style_bert_vits2`
 7. `audit` — integrity checks
 ★ `build` — runs the above with resume (inserts coverage before analyze when enabled)
 
-### Coverage automation (optional)
+### Coverage automation (optional Force Build)
 
 Enable in Config (`coverage.enabled: true`, `insert_before_analyze: true` by default):
 
 - **Build** automatically runs coverage **before** analyze so you do not wait on a full heavy pass first.
 - Or run `coverage-build` alone, then `analyze` / continue Build.
+
+**Final-set guarantee** is separate and **always on** by default: `selection.coverage_constraints.enabled: true` makes `select` reserve clips for those same targets (even if you re-run select alone). See [coverage-automation.md](coverage-automation.md#coverage-aware-select).
+
+### Coverage-aware select (what to do)
+
+1. Set targets under `coverage.features` (e.g. `phoneme.targets.v: 5`).
+2. Run **Build** (or coverage-run → analyze → select).
+3. Open `work/reports/selection/coverage-audit.csv` — statuses like `corpus_limit_satisfied` mean the corpus had fewer eligible clips than the configured target.
+4. To disable: set `selection.coverage_constraints.enabled: false` (and optionally `acoustic_diversity.enabled: false`).
 
 See [coverage-automation.md](coverage-automation.md).
 
@@ -107,6 +116,14 @@ So “shouldn’t we select then split?” is right for the latter protocols; fo
 - No `shell=True` in subprocess workers
 
 The GUI does not shell out to `cv-preprocess` subcommands.
+
+## Job store on WSL / Docker Desktop
+
+`work/jobs.sqlite3` lives under `dataset_builder.work_dir`. When that path is on a **Windows bind mount** (9p / DrvFs — common for `/workspace` in Dev Containers), SQLite **WAL** mode is unsafe and can raise `OperationalError: locking protocol` during Build progress updates.
+
+FilteringCV auto-detects these filesystems and uses rollback journal (`DELETE`) instead, with retries. Progress also falls back to JSONL if a write still fails, so analyze/build should not abort solely on a progress DB glitch.
+
+If an old `jobs.sqlite3-wal` / `-shm` pair remains after a crash, delete those sidecars (or re-open the GUI once so the store migrates) before retrying.
 
 ## Related docs
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from cv_preprocess.selection.protocol import ClipFeatures
@@ -111,3 +112,48 @@ def remove_clip_from_state(
         counter[group_id] -= 1
         if counter[group_id] <= 0:
             del counter[group_id]
+
+
+def preserves_required_coverage(
+    selected_counts: Mapping[str, int],
+    removed_clip: ClipFeatures,
+    added_clip: ClipFeatures,
+    required_targets: Mapping[str, int],
+    *,
+    removed_keys: set[str] | None = None,
+    added_keys: set[str] | None = None,
+) -> bool:
+    """Return True if swapping removed→added keeps required effective minima."""
+    if not required_targets:
+        return True
+    removed = set(removed_keys) if removed_keys is not None else set(removed_clip.coverage_keys)
+    added = set(added_keys) if added_keys is not None else set(added_clip.coverage_keys)
+    for feature, minimum in required_targets.items():
+        if minimum <= 0:
+            continue
+        current = int(selected_counts.get(feature, 0))
+        delta = 0
+        if feature in removed:
+            delta -= 1
+        if feature in added:
+            delta += 1
+        if current + delta < minimum:
+            return False
+    return True
+
+
+def coverage_counts_for_selection(
+    selected_ids: Sequence[str],
+    clips_by_id: Mapping[str, ClipFeatures],
+    feature_keys: Iterable[str],
+) -> dict[str, int]:
+    keys = set(feature_keys)
+    counts = {key: 0 for key in keys}
+    for clip_id in selected_ids:
+        clip = clips_by_id.get(clip_id)
+        if clip is None:
+            continue
+        for key in clip.coverage_keys:
+            if key in counts:
+                counts[key] += 1
+    return counts
