@@ -78,11 +78,13 @@ def test_should_flush_select_loop_phases(tmp_path):
             metadata={"phase": "prepare"},
         )
     )
+    # Keep message and current nearly unchanged so only always-flush phases
+    # (not message-change / step / interval) can cause these writes.
     for phase in ("greedy", "local_search", "coverage_reservation"):
         writer(
             ProgressEvent(
                 stage="select",
-                message=f"{phase} tick",
+                message="seed",
                 current=2,
                 total=100,
                 fraction=0.02,
