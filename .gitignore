@@ -38,3 +38,6 @@ frontend/dist/
 
 # GUI last-config cache
 .filteringcv/
+
+# Git worktrees
+.worktrees/
