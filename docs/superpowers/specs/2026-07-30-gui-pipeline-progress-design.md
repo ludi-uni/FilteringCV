@@ -112,7 +112,7 @@ Build orchestrator stage-transition messages stay as-is; child stages own detail
 1. Keep WebSocket + percent derivation (`fraction` else `current/total`).  
 2. Make **stage + phase + message** a stable, prominent header line.  
 3. Always show **%**, **current/total**, and **last updated** when available.  
-4. When job is active and last progress is stale (several seconds) but WS is connected, show a **processing** hint (distinct from disconnect).  
+4. When job is active and last progress is stale (**≥5 seconds**) but WS is connected, show a **processing** hint (distinct from disconnect).  
 5. Keep the existing log list; no major redesign.
 
 ## Testing
