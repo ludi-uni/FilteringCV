@@ -105,8 +105,29 @@ describe("FieldEditor text input UX", () => {
     const box = screen.getByRole("textbox");
     await user.click(box);
     await user.keyboard("{End}xx");
-    // Still focused and editable after length crosses 80 (textarea stays mounted).
     expect(document.activeElement).toBe(box);
-    expect((box as HTMLInputElement | HTMLTextAreaElement).value.length).toBe(81);
+    expect((box as HTMLTextAreaElement).value.length).toBe(81);
+  });
+
+  it("should_show_textbox_for_null_path_fields", () => {
+    render(
+      <Harness
+        path={["mfa_gate", "work_dir"]}
+        initial={null}
+        original={null}
+      />,
+    );
+    expect(screen.getByRole("textbox")).toBeTruthy();
+    expect(screen.queryByText("Set string")).toBeNull();
+  });
+
+  it("should_edit_empty_object_arrays_as_json_text", async () => {
+    const user = userEvent.setup();
+    render(<Harness path={["audio_pipeline", "steps"]} initial={[]} />);
+    const box = screen.getByRole("textbox");
+    await user.clear(box);
+    await user.type(box, "[[]");
+    expect((box as HTMLTextAreaElement).value).toBe("[]");
+    expect(screen.getByTestId("committed").textContent).toBe("[]");
   });
 });

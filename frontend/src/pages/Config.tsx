@@ -95,25 +95,26 @@ export function Config() {
 
   const dirty = useMemo(() => !pathsEqual(draft, baseline), [draft, baseline]);
 
+  // Sidebar filter only — never unmount the active section editor while typing.
+  // Search matches against baseline so live edits cannot hide the current section.
   const visibleSections = useMemo(() => {
     if (!meta) return [];
     return meta.sections.filter((s) => {
       if (chip === "changed") {
-        return !pathsEqual(draft[s.id], baseline[s.id]);
+        return !pathsEqual(draft[s.id], baseline[s.id]) || s.id === section;
       }
       if (chip !== "all") {
         const allowed = FILTER_GROUPS[chip];
         if (!allowed.includes(s.id) && s.id !== "schema_version") {
-          // still show schema_version only for all
           if (s.group === "meta") return false;
           return false;
         }
       }
       if (!search.trim()) return true;
-      const value = draft[s.id];
-      return matchesSearch(s.id, value, search);
+      if (s.id === section) return true;
+      return matchesSearch(s.id, baseline[s.id], search);
     });
-  }, [meta, chip, draft, baseline, search]);
+  }, [meta, chip, draft, baseline, search, section]);
 
   useEffect(() => {
     if (visibleSections.length === 0) return;
@@ -188,8 +189,6 @@ export function Config() {
 
   const sectionValue = draft[section];
   const sectionOriginal = baseline[section];
-  const sectionMatchesSearch =
-    !search.trim() || matchesSearch(section, sectionValue, search);
 
   if (loading) {
     return <p className="loading">Loading config…</p>;
@@ -338,9 +337,7 @@ export function Config() {
           </aside>
           <section className="card config-editor">
             <h2>{meta?.sections.find((s) => s.id === section)?.label ?? section}</h2>
-            {!sectionMatchesSearch ? (
-              <p className="loading">No fields match the current search.</p>
-            ) : sectionValue === undefined ? (
+            {sectionValue === undefined ? (
               <p className="loading">Section not present in this config (using defaults).</p>
             ) : (
               <FieldEditor

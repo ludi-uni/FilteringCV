@@ -7,7 +7,7 @@ Use the **CLI** for CI, headless servers, scripting, and automation. Use the **G
 ## Install
 
 ```bash
-uv sync --extra gui --extra sidon
+uv sync --extra sidon --extra gui --extra dev
 ```
 
 This installs FastAPI, uvicorn, websockets, and python-multipart. Add other extras (`dasheng`, `sgmse`, `hifigan`, `wpe_dfn`, etc.) if your YAML requires them — same as for CLI.
@@ -18,11 +18,23 @@ This installs FastAPI, uvicorn, websockets, and python-multipart. Add other extr
 ./scripts/start-gui.sh
 ```
 
-The helper builds `frontend/` with `pnpm` when `frontend/dist` is missing (use `--skip-build` to skip), then runs `cv-preprocess gui`. Open **http://127.0.0.1:8765** in your browser (default bind: localhost only).
+The helper builds `frontend/` with `pnpm` when `frontend/dist` is missing (use `--skip-build` to skip), then runs `cv-preprocess gui`.
 
-Pass extra uvicorn/CLI flags after `--`, for example:
+### Open in the browser (devcontainer / Cursor Remote)
+
+The GUI listens inside the container. Windows/macOS browsers do **not** reach it until port **8765** is forwarded:
+
+1. Start: `./scripts/start-gui.sh`
+2. Cursor / VS Code → **Ports** panel (パネル「ポート」)
+3. **Forward a Port** → `8765`（既に出ていればその行の Local Address を開く）
+4. Open the forwarded URL (usually **http://127.0.0.1:8765/**)
+
+`.devcontainer/devcontainer.json` sets `forwardPorts: [8765]` so rebuild/reopen should auto-forward.
+
+In Docker, `./scripts/start-gui.sh` binds **`0.0.0.0`** by default. Override:
 
 ```bash
+./scripts/start-gui.sh -- --host 0.0.0.0 --port 8765
 ./scripts/start-gui.sh -- --host 127.0.0.1 --port 8765
 ```
 

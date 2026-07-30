@@ -1,4 +1,5 @@
-# CUDA 12.8 **devel**（nvcc 同梱）+ Python。既定の ``uv sync`` は Sidon 中心だが、SGMSE の upfirdn2d 等（torch JIT で .cu）を入れる場合も nvcc が要るため devel を維持。
+# CUDA 12.8 **devel**（nvcc 同梱）+ Python。Dev Container 作成時は
+# ``uv sync --extra sidon --extra gui --extra dev``（postCreateCommand）。
 # PyTorch は uv が pyproject の cu128 インデックスから入れる（.venv）。
 # NeMo / NFA は別 venv（/opt/nfa-venv）: sgmse extra が protobuf 7 系を要求するため nemo_toolkit と同一 .venv に共存できない。
 FROM nvidia/cuda:12.8.1-devel-ubuntu24.04
@@ -16,13 +17,16 @@ RUN apt-get update \
         cargo \
         curl \
         git \
+        nodejs \
+        npm \
         python3 \
         python3-dev \
         python3-venv \
         libsndfile1 \
         rustc \
         sox \
-    && rm -rf /var/lib/apt/lists/*
+    && npm install -g pnpm@9.15.4 \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uvx /usr/local/bin/uvx

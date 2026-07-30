@@ -10,6 +10,13 @@
     "source=${localWorkspaceFolder}/../dataset/CommonVoice,target=/workspace/CommonVoice,type=bind,consistency=cached"
   ],
   "runArgs": ["--gpus=all"],
+  "forwardPorts": [8765],
+  "portsAttributes": {
+    "8765": {
+      "label": "FilteringCV GUI",
+      "onAutoForward": "openBrowser"
+    }
+  },
   "hostRequirements": {
     "gpu": "optional"
   },
@@ -17,12 +24,14 @@
     "vscode": {
       "settings": {
         "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
-        "python.terminal.activateEnvironment": true
+        "python.terminal.activateEnvironment": true,
+        "remote.autoForwardPorts": true,
+        "remote.autoForwardPortsSource": "hybrid"
       },
       "extensions": ["charliermarsh.ruff", "ms-python.python"]
     }
   },
-  "postCreateCommand": "cd /workspace && uv sync --extra sidon --extra dev",
+  "postCreateCommand": "cd /workspace && uv sync --extra sidon --extra gui --extra dev",
   "containerEnv": {
     "NFA_PYTHON": "/opt/nfa-venv/bin/python",
     "NFA_ALIGN_DIR": "/opt/NeMo/tools/nemo_forced_aligner"
